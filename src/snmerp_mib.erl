@@ -58,13 +58,13 @@ name_to_oid(Name, #mibdat{name2oid = Name2Oid}) ->
 		_ -> not_found
 	end.
 
--spec table_info(oid(), mibs()) -> {#table_info{}, Columns :: [me()]} | not_found.
+-spec table_info(oid(), mibs()) -> {#table_info{}, Augmented :: [#table_info{}], Columns :: [me()]} | not_found.
 table_info(Oid, #mibdat{tables = Tables}) ->
 	case trie:find(Oid, Tables) of
 		{ok, Mes} ->
-			{[TblMe], ColMes} = lists:partition(fun(Me) -> Me#me.entrytype =:= table end, Mes),
+			{[TblMe | AugmentMes], ColMes} = lists:partition(fun(Me) -> Me#me.entrytype =:= table end, Mes),
 			TblInfo = proplists:get_value(table_info, TblMe#me.assocList),
-			{TblInfo, ColMes};
+			{TblInfo, AugmentMes, ColMes};
 		_ -> not_found
 	end.
 
@@ -79,7 +79,7 @@ oid_to_prefix_me(Oid, #mibdat{oid2me = Oid2Me}) ->
 oid_prefix_enum(Oid, #mibdat{enums = Enums}) ->
 	case trie:find_prefix_longest(Oid, Enums) of
 		{ok, _FoundOid, Enum} -> Enum;
-		Oth -> io:format("~p\n", [Oth]), not_found
+		_ -> not_found
 	end.
 
 -spec oid_to_me(oid(), mibs()) -> me() | not_found.
@@ -97,6 +97,14 @@ add_file(Path, D = #mibdat{}) ->
 				{'EXIT', Reason} -> {error, Reason};
 				#mib{mes = Mes} ->
 					D2 = lists:foldl(fun
+						(Me = #me{entrytype = table_entry}, DD = #mibdat{}) ->
+							#me{aliasname = NameAtom, mfa = MFA} = Me,
+							#mibdat{name2oid = Name2Oid} = DD,
+							{snmp_generic,table_func,[{TableAtom,_}]} = MFA,
+							TableOid = trie:fetch(atom_to_list(TableAtom), Name2Oid),
+							Name2Oid2 = trie:store(atom_to_list(NameAtom), TableOid, Name2Oid),
+							DD#mibdat{name2oid = Name2Oid2};
+
 						(Me = #me{entrytype = EntType}, DD = #mibdat{}) 
 								when (EntType =:= variable) or (EntType =:= table_column)
 								or (EntType =:= table) ->
@@ -118,7 +126,14 @@ add_file(Path, D = #mibdat{}) ->
 							end,
 							Tbls2 = case proplists:get_value(table_name, Assocs) of
 								undefined when (EntType =:= table) -> 
-									trie:append(Oid, Me, Tbls);
+									TableInfo = proplists:get_value(table_info, Assocs),
+									TTbls = case TableInfo#table_info.index_types of
+										{augments, {ParentTblAtom, _}} ->
+											ParentOid = trie:fetch(atom_to_list(ParentTblAtom), Name2Oid),
+											trie:append(ParentOid, Me, Tbls);
+										_ -> Tbls
+									end,
+									trie:append(Oid, Me, TTbls);
 								undefined -> Tbls;
 								TblNameAtom ->
 									TblOid = trie:fetch(atom_to_list(TblNameAtom), Name2Oid),

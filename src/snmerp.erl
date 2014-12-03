@@ -180,8 +180,8 @@ table(S = #snmerp{}, Var, Opts) ->
 table(S = #snmerp{}, Var, Columns, Opts) ->
 	TableOid = var_to_oid(Var, S),
 
-	{_TblInfo, ColMes} = snmerp_mib:table_info(tuple_to_list(TableOid), S#snmerp.mibs),
-	ColSet = trie:new([Me#me.oid || Me <- ColMes]),
+	{_TblInfo, AugMes, _ColMes} = snmerp_mib:table_info(tuple_to_list(TableOid), S#snmerp.mibs),
+	ColSet = trie:new([tuple_to_list(TableOid)] ++ [Me#me.oid || Me <- AugMes]),
 
 	ColumnOids = [var_to_oid(C, S) || C <- Columns],
 	ColumnIdxs = trie:new(lists:zip([tuple_to_list(T) || T <- ColumnOids], lists:seq(1, length(ColumnOids)))),
@@ -189,7 +189,7 @@ table(S = #snmerp{}, Var, Columns, Opts) ->
 	BaseRowArray = array:new([{default, BaseRow}]),
 	SortedColumnOids = lists:sort(ColumnOids),
 
-	case lists:dropwhile(fun(COid) -> trie:is_prefixed(tuple_to_list(COid), ColSet) end, ColumnOids) of
+	case lists:dropwhile(is_prefixed_fun(ColSet), ColumnOids) of
 		[NonMatch | _] -> error({column_outside_table, NonMatch, TableOid});
 		[] ->
 			Timeout = proplists:get_value(timeout, Opts, S#snmerp.timeout),
@@ -199,6 +199,14 @@ table(S = #snmerp{}, Var, Columns, Opts) ->
 				{ok, RowArray} -> {ok, array:sparse_to_list(RowArray)};
 				Err -> Err
 			end
+	end.
+
+is_prefixed_fun(Set) ->
+	fun(K) ->
+		case trie:find_prefix_longest(tuple_to_list(K), Set) of
+			{ok, _, _} -> true;
+			_ -> false
+		end
 	end.
 
 table_next(S = #snmerp{}, Oids = [Oid | RestOids], Timeout, Retries, MaxBulk, RowArray, ColumnIdxs) ->
