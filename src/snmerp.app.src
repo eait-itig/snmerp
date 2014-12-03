@@ -1,0 +1,18 @@
+{application, snmerp,
+ [
+  {description, "Simple SNMPv2 client"},
+  {vsn, "1.0"},
+  {registered, []},
+  {included_applications, [
+  ]},
+  {applications, [
+                  kernel,
+                  stdlib,
+                  ssl,
+                  lager,
+                  asn1
+                 ]},
+  {mod, { snmerp_app, []}},
+  {env, [
+    ]}
+ ]}.
