@@ -181,14 +181,14 @@ table(S = #snmerp{}, Var, Opts) ->
 	ColumnNames = [atom_to_list(Me#me.aliasname) || Me <- ColMes],
 	ColumnOids = [list_to_tuple(Me#me.oid) || Me <- ColMes],
 	ColumnIdxs = trie:new(lists:zip([tuple_to_list(C) || C <- ColumnOids], lists:seq(1, length(ColumnOids)))),
-	BaseRow = list_to_tuple(lists:seq(1, length(ColumnOids))),
+	BaseRow = list_to_tuple([null || _ <- lists:seq(1, length(ColumnOids))]),
 	BaseRowArray = array:new([{default, BaseRow}]),
-	SortedColumnOids = lists:sort(ColumnOids),
+	SortedColumnOids = [FirstOid | _] = lists:sort(ColumnOids),
 
 	Timeout = proplists:get_value(timeout, Opts, S#snmerp.timeout),
 	Retries = proplists:get_value(retries, Opts, S#snmerp.retries),
 	MaxBulk = proplists:get_value(max_bulk, Opts, S#snmerp.max_bulk),
-	case table_next(S, SortedColumnOids, Timeout, Retries, MaxBulk, BaseRowArray, ColumnIdxs) of
+	case table_next(S, SortedColumnOids, FirstOid, Timeout, Retries, MaxBulk, BaseRowArray, ColumnIdxs) of
 		{ok, RowArray} -> {ok, ColumnNames, array:sparse_to_list(RowArray)};
 		Err -> Err
 	end.
@@ -202,9 +202,9 @@ table(S = #snmerp{}, Var, Columns, Opts) ->
 
 	ColumnOids = [var_to_oid(C, S) || C <- Columns],
 	ColumnIdxs = trie:new(lists:zip([tuple_to_list(T) || T <- ColumnOids], lists:seq(1, length(ColumnOids)))),
-	BaseRow = list_to_tuple(lists:seq(1, length(ColumnOids))),
+	BaseRow = list_to_tuple([null || _ <- lists:seq(1, length(ColumnOids))]),
 	BaseRowArray = array:new([{default, BaseRow}]),
-	SortedColumnOids = lists:sort(ColumnOids),
+	SortedColumnOids = [FirstOid | _] = lists:sort(ColumnOids),
 
 	case lists:dropwhile(is_prefixed_fun(ColSet), ColumnOids) of
 		[NonMatch | _] -> error({column_outside_table, NonMatch, TableOid});
@@ -212,7 +212,7 @@ table(S = #snmerp{}, Var, Columns, Opts) ->
 			Timeout = proplists:get_value(timeout, Opts, S#snmerp.timeout),
 			Retries = proplists:get_value(retries, Opts, S#snmerp.retries),
 			MaxBulk = proplists:get_value(max_bulk, Opts, S#snmerp.max_bulk),
-			case table_next(S, SortedColumnOids, Timeout, Retries, MaxBulk, BaseRowArray, ColumnIdxs) of
+			case table_next(S, SortedColumnOids, FirstOid, Timeout, Retries, MaxBulk, BaseRowArray, ColumnIdxs) of
 				{ok, RowArray} -> {ok, array:sparse_to_list(RowArray)};
 				Err -> Err
 			end
@@ -226,7 +226,7 @@ is_prefixed_fun(Set) ->
 		end
 	end.
 
-table_next(S = #snmerp{}, Oids = [Oid | _RestOids], Timeout, Retries, MaxBulk, RowArray, ColumnIdxs) ->
+table_next(S = #snmerp{}, Oids, Oid, Timeout, Retries, MaxBulk, RowArray, ColumnIdxs) ->
 	ReqVbs = [#'VarBind'{name = Oid, v = {unSpecified,'NULL'}}],
 	ReqPdu = {'get-bulk-request', #'BulkPDU'{'non-repeaters' = 0, 'max-repetitions' = MaxBulk, 'variable-bindings' = ReqVbs}},
 	case request_pdu(ReqPdu, Timeout, Retries, S) of
@@ -235,7 +235,7 @@ table_next(S = #snmerp{}, Oids = [Oid | _RestOids], Timeout, Retries, MaxBulk, R
 		Err -> Err
 	end.
 
-table_next_vbs(S = #snmerp{}, [Oid | RestOids], Timeout, Retries, MaxBulk, RowArray, ColumnIdxs, Vbs) ->
+table_next_vbs(S = #snmerp{}, Oids = [Oid | RestOids], Timeout, Retries, MaxBulk, RowArray, ColumnIdxs, Vbs) ->
 	{InPrefix, OutOfPrefix} = lists:splitwith(
 		fun(#'VarBind'{name = ThisOid}) -> is_tuple_prefix(Oid, ThisOid) end, Vbs),
 	{ok, _, ColumnIdx} = trie:find_prefix_longest(tuple_to_list(Oid), ColumnIdxs),
@@ -249,14 +249,14 @@ table_next_vbs(S = #snmerp{}, [Oid | RestOids], Timeout, Retries, MaxBulk, RowAr
 		[] ->
 			LastVb = lists:last(InPrefix),
 			NewOid = LastVb#'VarBind'.name,
-			table_next(S, [NewOid | RestOids], Timeout, Retries, MaxBulk, RowArray2, ColumnIdxs);
+			table_next(S, Oids, NewOid, Timeout, Retries, MaxBulk, RowArray2, ColumnIdxs);
 
 		[FirstOut | _] ->
 			case RestOids of
 				[NextOid | _] ->
 					case is_tuple_prefix(NextOid, FirstOut) of
 						true -> table_next_vbs(S, RestOids, Timeout, Retries, MaxBulk, RowArray2, ColumnIdxs, OutOfPrefix);
-						false -> table_next(S, RestOids, Timeout, Retries, MaxBulk, RowArray2, ColumnIdxs)
+						false -> table_next(S, RestOids, NextOid, Timeout, Retries, MaxBulk, RowArray2, ColumnIdxs)
 					end;
 				[] ->
 					{ok, RowArray2}
