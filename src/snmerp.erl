@@ -174,7 +174,24 @@ walk_next(S = #snmerp{}, BaseOid, Oid, Timeout, Retries, MaxBulk) ->
 
 -spec table(client(), var(), req_options()) -> {ok, Columns :: [string()], Rows :: [tuple()]} | {error, term()}.
 table(S = #snmerp{}, Var, Opts) ->
-	{error, nimpl}.
+	TableOid = var_to_oid(Var, S),
+
+	{_TblInfo, _AugMes, ColMes} = snmerp_mib:table_info(tuple_to_list(TableOid), S#snmerp.mibs),
+
+	ColumnNames = [atom_to_list(Me#me.aliasname) || Me <- ColMes],
+	ColumnOids = [list_to_tuple(Me#me.oid) || Me <- ColMes],
+	ColumnIdxs = trie:new(lists:zip([tuple_to_list(C) || C <- ColumnOids], lists:seq(1, length(ColumnOids)))),
+	BaseRow = list_to_tuple(lists:seq(1, length(ColumnOids))),
+	BaseRowArray = array:new([{default, BaseRow}]),
+	SortedColumnOids = lists:sort(ColumnOids),
+
+	Timeout = proplists:get_value(timeout, Opts, S#snmerp.timeout),
+	Retries = proplists:get_value(retries, Opts, S#snmerp.retries),
+	MaxBulk = proplists:get_value(max_bulk, Opts, S#snmerp.max_bulk),
+	case table_next(S, SortedColumnOids, Timeout, Retries, MaxBulk, BaseRowArray, ColumnIdxs) of
+		{ok, RowArray} -> {ok, ColumnNames, array:sparse_to_list(RowArray)};
+		Err -> Err
+	end.
 
 -spec table(client(), var(), [var()], req_options()) -> {ok, Rows :: [tuple()]} | {error, term()}.
 table(S = #snmerp{}, Var, Columns, Opts) ->
