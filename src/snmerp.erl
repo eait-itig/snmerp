@@ -60,6 +60,7 @@
 -export([open/2, close/1]).
 -export([get/2, get/3]).
 -export([walk/2, walk/3]).
+-export([set/3, set/4]).
 
 -spec open(inet:ip_address() | inet:hostname(), options()) -> {ok, client()} | {error, term()}.
 open(Address, Options) ->
@@ -103,6 +104,23 @@ get(S = #snmerp{}, Var, Opts) ->
 				_ ->
 					{error, {unexpected_varbinds, Vbs}}
 			end;
+		Err -> Err
+	end.
+
+-spec set(client(), var(), value()) -> ok | {error, term()}.
+set(S = #snmerp{}, Var, Value) ->
+	set(S, Var, Value, []).
+
+-spec set(client(), var(), value(), req_options()) -> ok | {error, term()}.
+set(S = #snmerp{}, Var, Value, Opts) ->
+	Timeout = proplists:get_value(timeout, Opts, S#snmerp.timeout),
+	Retries = proplists:get_value(retries, Opts, S#snmerp.retries),
+	Oid = var_to_oid(Var, S),
+	V = value_to_v(Value),
+	ReqVbs = [#'VarBind'{name = Oid, v = V}],
+	ReqPdu = {'set-request', #'PDU'{'variable-bindings' = ReqVbs}},
+	case request_pdu(ReqPdu, Timeout, Retries, S) of
+		{ok, #'PDU'{}} -> ok;
 		Err -> Err
 	end.
 
@@ -247,6 +265,21 @@ v_to_value({value, {'application-wide', {'unsigned-integer-value', Int}}}) when 
 v_to_value({value, {'application-wide', {'ipAddress-value', IpBin}}}) when is_binary(IpBin) ->
 	<<A,B,C,D>> = IpBin, {A,B,C,D};
 v_to_value({value, V}) -> error({unknown_value_type, V}).
+
+-spec value_to_v(value()) -> term().
+value_to_v(null) ->
+	{'unSpecified', 'NULL'};
+value_to_v(Binary) when is_binary(Binary) ->
+	{value, {simple, {'string-value', Binary}}};
+value_to_v({A,B,C,D}) when (A >= 0) and (A < 256) and (B >= 0) and (B < 256) and
+						(C >= 0) and (C < 256) and (D >= 0) and (D < 256) ->
+	{value, {'application-wide', {'ipAddress-value', <<A,B,C,D>>}}};
+value_to_v(Tuple) when is_tuple(Tuple) ->
+	{value, {simple, {'objectID-value', Tuple}}};
+value_to_v(Int) when is_integer(Int) ->
+	{value, {simple, {'integer-value', Int}}};
+value_to_v(Other) ->
+	error({unknown_value_type, Other}).
 
 -spec var_to_oid(var(), client()) -> oid().
 var_to_oid(Name, #snmerp{mibs = Mibs}) when is_list(Name) ->
