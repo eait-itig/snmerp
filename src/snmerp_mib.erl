@@ -119,7 +119,7 @@ add_file(Path, D = #mibdat{}) ->
 									case proplists:get_value(enums, Asn1Type#asn1_type.assocList) of
 										undefined -> Enums;
 										RawEnum ->
-											Enum = [{V, atom_to_list(K)} || {K,V} <- RawEnum],
+											Enum = [{V, K} || {K,V} <- RawEnum],
 											trie:store(Oid, Enum, Enums)
 									end;
 								_ -> Enums

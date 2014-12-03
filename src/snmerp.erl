@@ -226,7 +226,7 @@ is_prefixed_fun(Set) ->
 		end
 	end.
 
-table_next(S = #snmerp{}, Oids = [Oid | RestOids], Timeout, Retries, MaxBulk, RowArray, ColumnIdxs) ->
+table_next(S = #snmerp{}, Oids = [Oid | _RestOids], Timeout, Retries, MaxBulk, RowArray, ColumnIdxs) ->
 	ReqVbs = [#'VarBind'{name = Oid, v = {unSpecified,'NULL'}}],
 	ReqPdu = {'get-bulk-request', #'BulkPDU'{'non-repeaters' = 0, 'max-repetitions' = MaxBulk, 'variable-bindings' = ReqVbs}},
 	case request_pdu(ReqPdu, Timeout, Retries, S) of
@@ -235,7 +235,7 @@ table_next(S = #snmerp{}, Oids = [Oid | RestOids], Timeout, Retries, MaxBulk, Ro
 		Err -> Err
 	end.
 
-table_next_vbs(S = #snmerp{}, Oids = [Oid | RestOids], Timeout, Retries, MaxBulk, RowArray, ColumnIdxs, Vbs) ->
+table_next_vbs(S = #snmerp{}, [Oid | RestOids], Timeout, Retries, MaxBulk, RowArray, ColumnIdxs, Vbs) ->
 	{InPrefix, OutOfPrefix} = lists:splitwith(
 		fun(#'VarBind'{name = ThisOid}) -> is_tuple_prefix(Oid, ThisOid) end, Vbs),
 	{ok, _, ColumnIdx} = trie:find_prefix_longest(tuple_to_list(Oid), ColumnIdxs),
@@ -380,11 +380,11 @@ value_to_v(Tuple, _, _) when is_tuple(Tuple) ->
 	{value, {simple, {'objectID-value', Tuple}}};
 value_to_v(Int, _, _) when is_integer(Int) ->
 	{value, {simple, {'integer-value', Int}}};
-value_to_v(Str, Oid, S) when is_list(Str) ->
+value_to_v(Str, Oid, S) when is_atom(Str) ->
 	case snmerp_mib:oid_prefix_enum(tuple_to_list(Oid), S#snmerp.mibs) of
 		not_found -> error({unknown_value_type, Str});
 		Enum ->
-			case [{I, S} || {I, S} <- Enum, S =:= Str] of
+			case [{I, St} || {I, St} <- Enum, St =:= Str] of
 				[{Int, Str}] -> {value, {simple, {'integer-value', Int}}};
 				_ -> error({unknown_enum_value, Str})
 			end
