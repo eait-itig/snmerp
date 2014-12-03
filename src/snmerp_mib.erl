@@ -33,7 +33,9 @@
 
 -export([empty/0, add_file/2, add_dir/2, name_to_oid/2, oid_to_prefix_me/2, oid_to_me/2]).
 
--record(mibdat, {name2oid = trie:new(), oid2me = trie:new()}).
+-record(mibdat, {
+	name2oid = trie:new() :: trie:trie(),
+	oid2me = trie:new() :: trie:trie()}).
 
 -opaque mibs() :: #mibdat{}.
 -type oid() :: [integer()].

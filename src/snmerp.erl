@@ -33,7 +33,14 @@
 -include_lib("kernel/include/inet.hrl").
 -include_lib("snmp/include/snmp_types.hrl").
 
--record(snmerp, {mibs, sock, ip, community, timeout, max_bulk, retries}).
+-record(snmerp, {
+	mibs :: snmerp_mib:mibs(),
+	sock :: term(),
+	ip :: inet:ip_address(),
+	community :: string(),
+	timeout :: integer(),
+	max_bulk :: integer(),
+	retries :: integer()}).
 
 -opaque client() :: #snmerp{}.
 -export_type([client/0]).
@@ -48,10 +55,11 @@
 -type index() :: integer() | [integer()].
 -type var() :: oid() | name() | {name(), index()}.
 
--type value() :: binary() | integer() | oid() | null | not_found.
+-type value() :: binary() | integer() | oid() | inet:ip_address() | null | not_found.
 
 -export([open/2, close/1]).
 -export([get/2, get/3]).
+-export([walk/2, walk/3]).
 
 -spec open(inet:ip_address() | inet:hostname(), options()) -> {ok, client()} | {error, term()}.
 open(Address, Options) ->
@@ -88,7 +96,7 @@ get(S = #snmerp{}, Var, Opts) ->
 	ReqVbs = [#'VarBind'{name = Oid, v = {unSpecified,'NULL'}}],
 	ReqPdu = {'get-request', #'PDU'{'variable-bindings' = ReqVbs}},
 	case request_pdu(ReqPdu, Timeout, Retries, S) of
-		{ok, Pdu = #'PDU'{'variable-bindings' = Vbs}} ->
+		{ok, #'PDU'{'variable-bindings' = Vbs}} ->
 			case Vbs of
 				[#'VarBind'{name = Oid, v = V}] ->
 					{ok, v_to_value(V)};
@@ -98,14 +106,88 @@ get(S = #snmerp{}, Var, Opts) ->
 		Err -> Err
 	end.
 
+-spec walk(client(), var()) -> {ok, [{index(), value()}]} | {error, term()}.
+walk(S = #snmerp{}, Var) ->
+	walk(S, Var, []).
+
+-spec walk(client(), var(), req_options()) -> {ok, [{index(), value()}]} | {error, term()}.
+walk(S = #snmerp{}, Var, Opts) ->
+	Timeout = proplists:get_value(timeout, Opts, S#snmerp.timeout),
+	Retries = proplists:get_value(retries, Opts, S#snmerp.retries),
+	MaxBulk = proplists:get_value(max_bulk, Opts, S#snmerp.max_bulk),
+	Oid = var_to_oid(Var, S),
+	case walk_next(S, Oid, Oid, Timeout, Retries, MaxBulk) of
+		{ok, Vbs} ->
+			{OutValuesRev, _} = lists:foldl(fun(#'VarBind'{name = VbOid, v = V}, {Values, Seen}) ->
+				Index = oid_index(Oid, VbOid),
+				case gb_sets:is_element(Index, Seen) of
+					true -> {Values, Seen};
+					false ->
+						Values2 = [{Index, v_to_value(V)} | Values],
+						Seen2 = gb_sets:add_element(Index, Seen),
+						{Values2, Seen2}
+				end
+			end, {[], gb_sets:empty()}, Vbs),
+			{ok, lists:reverse(OutValuesRev)};
+		Err -> Err
+	end.
+
+walk_next(S = #snmerp{}, BaseOid, Oid, Timeout, Retries, MaxBulk) ->
+	ReqVbs = [#'VarBind'{name = Oid, v = {unSpecified,'NULL'}}],
+	ReqPdu = {'get-bulk-request', #'BulkPDU'{'non-repeaters' = 0, 'max-repetitions' = MaxBulk, 'variable-bindings' = ReqVbs}},
+	case request_pdu(ReqPdu, Timeout, Retries, S) of
+		{ok, #'PDU'{'variable-bindings' = Vbs}} ->
+			{InPrefix, OutOfPrefix} = lists:splitwith(
+				fun(#'VarBind'{name = ThisOid}) -> is_tuple_prefix(BaseOid, ThisOid) end, Vbs),
+			case OutOfPrefix of
+				[] ->
+					LastVb = lists:last(InPrefix),
+					NextOid = LastVb#'VarBind'.name,
+					case walk_next(S, BaseOid, NextOid, Timeout, Retries, MaxBulk) of
+						{ok, Rest} -> {ok, InPrefix ++ Rest};
+						Err -> Err
+					end;
+				_ ->
+					{ok, InPrefix}
+			end;
+		Err -> Err
+	end.
+
 -spec close(client()) -> ok.
 close(#snmerp{sock = Sock}) ->
 	gen_udp:close(Sock).
 
+%% @internal
+-spec is_tuple_prefix(tuple(), tuple()) -> boolean().
+is_tuple_prefix(Tuple1, Tuple2) when is_tuple(Tuple1) and is_tuple(Tuple2) ->
+	MinLen = tuple_size(Tuple1),
+	case (tuple_size(Tuple2) >= MinLen) of
+		true ->
+			not lists:any(fun(N) -> element(N,Tuple1) =/= element(N,Tuple2) end, lists:seq(1, MinLen));
+		false ->
+			false
+	end.
+
+%% @internal
+-spec oid_index(oid(), oid()) -> integer() | oid().
+oid_index(BaseOid, Oid) when is_tuple(BaseOid) and is_tuple(Oid) ->
+	IdxList = [element(N, Oid) || N <- lists:seq(tuple_size(BaseOid) + 1, tuple_size(Oid))],
+	case IdxList of
+		[Idx] -> Idx;
+		_ -> list_to_tuple(IdxList)
+	end.
+
+%% @internal
+-spec request_pdu({atom(), #'PDU'{} | #'BulkPDU'{}}, integer(), integer(), client()) -> {ok, #'PDU'{}} | {error, term()}.
 request_pdu(_, _, 0, _) -> {error, timeout};
-request_pdu({PduType, Pdu = #'PDU'{}}, Timeout, Retries, S = #snmerp{sock = Sock, ip = Ip, community = Com}) ->
+request_pdu({PduType, Pdu}, Timeout, Retries, S = #snmerp{sock = Sock, ip = Ip, community = Com}) ->
 	<<_:1, RequestId:31/big>> = crypto:rand_bytes(4),
-	Pdu2 = Pdu#'PDU'{'request-id' = RequestId, 'error-status' = noError, 'error-index' = 0},
+	Pdu2 = case Pdu of
+		#'PDU'{} ->
+			Pdu#'PDU'{'request-id' = RequestId, 'error-status' = noError, 'error-index' = 0};
+		#'BulkPDU'{} ->
+			Pdu#'BulkPDU'{'request-id' = RequestId}
+	end,
 	{ok, PduBin} = 'SNMPv2':encode('PDUs', {PduType, Pdu2}),
 	Msg = #'Message'{version = 'version-2c', community = Com, data = PduBin},
 	{ok, MsgBin} = 'SNMPv2':encode('Message', Msg),
@@ -126,6 +208,8 @@ request_pdu({PduType, Pdu = #'PDU'{}}, Timeout, Retries, S = #snmerp{sock = Sock
 			Err
 	end.
 
+%% @internal
+-spec recv_reqid(integer(), term(), inet:ip_address(), integer(), integer()) -> {ok, {atom(), #'PDU'{}}} | {error, term()}.
 recv_reqid(Timeout, Sock, Ip, Port, ReqId) ->
 	receive
 		{udp, Sock, Ip, Port, ReplyBin} ->
@@ -134,7 +218,7 @@ recv_reqid(Timeout, Sock, Ip, Port, ReqId) ->
 					case 'SNMPv2':decode('PDUs', PduBin) of
 						{ok, {PduType, Pdu = #'PDU'{'request-id' = ReqId}}} ->
 							{ok, {PduType, Pdu}};
-						{ok, {PduType, Pdu = #'PDU'{}}} ->
+						{ok, {_PduType, #'PDU'{}}} ->
 							ok = inet:setopts(Sock, [{active, once}]),
 							recv_reqid(Timeout, Sock, Ip, Port, ReqId);
 						_ ->
@@ -147,6 +231,7 @@ recv_reqid(Timeout, Sock, Ip, Port, ReqId) ->
 		{error, timeout}
 	end.
 
+-spec v_to_value(term()) -> value().
 v_to_value({'unSpecified', _}) -> null;
 v_to_value({'noSuchObject', _}) -> not_found;
 v_to_value('noSuchObject') -> not_found;
