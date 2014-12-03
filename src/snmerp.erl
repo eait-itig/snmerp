@@ -28,3 +28,155 @@
 %% @author Alex Wilson <alex@uq.edu.au>
 %% @doc snmerp public api
 -module(snmerp).
+
+-include("include/SNMPv2.hrl").
+-include_lib("kernel/include/inet.hrl").
+-include_lib("snmp/include/snmp_types.hrl").
+
+-record(snmerp, {mibs, sock, ip, community, timeout, max_bulk, retries}).
+
+-opaque client() :: #snmerp{}.
+-export_type([client/0]).
+
+-type req_option() :: {timeout, Ms :: integer()} | {max_bulk, integer()} | {retries, integer()}.
+-type req_options() :: [req_option()].
+-type option() :: {community, string()} | {mibs, snmerp_mib:mibs()} | req_option().
+-type options() :: [option()].
+
+-type oid() :: tuple().
+-type name() :: string().
+-type index() :: integer() | [integer()].
+-type var() :: oid() | name() | {name(), index()}.
+
+-type value() :: binary() | integer() | oid() | null | not_found.
+
+-export([open/2, close/1]).
+-export([get/2, get/3]).
+
+-spec open(inet:ip_address() | inet:hostname(), options()) -> {ok, client()} | {error, term()}.
+open(Address, Options) ->
+	Ip = case is_tuple(Address) of
+		true -> Address;
+		false ->
+			case inet_res:getbyname(Address, a) of
+				{ok, #hostent{h_addr_list = [HAddr | _]}} -> HAddr;
+				_ -> error(bad_hostname)
+			end
+	end,
+	{ok, Sock} = gen_udp:open(0, [binary, {active, false}]),
+	Community = proplists:get_value(community, Options, "public"),
+	Mibs = case proplists:get_value(mibs, Options) of
+		undefined ->
+			{ok, M} = snmerp_mib:add_dir(filename:join([code:priv_dir(snmerp), "mibs"]), snmerp_mib:empty()),
+			M;
+		M -> M
+	end,
+	Timeout = proplists:get_value(timeout, Options, 5000),
+	MaxBulk = proplists:get_value(max_bulk, Options, 20),
+	Retries = proplists:get_value(retries, Options, 3),
+	{ok, #snmerp{ip = Ip, sock = Sock, community = Community, mibs = Mibs, timeout = Timeout, max_bulk = MaxBulk, retries = Retries}}.
+
+-spec get(client(), var()) -> {ok, value()} | {error, term()}.
+get(S = #snmerp{}, Var) ->
+	get(S, Var, []).
+
+-spec get(client(), var(), req_options()) -> {ok, value()} | {error, term()}.
+get(S = #snmerp{}, Var, Opts) ->
+	Timeout = proplists:get_value(timeout, Opts, S#snmerp.timeout),
+	Retries = proplists:get_value(retries, Opts, S#snmerp.retries),
+	Oid = var_to_oid(Var, S),
+	ReqVbs = [#'VarBind'{name = Oid, v = {unSpecified,'NULL'}}],
+	ReqPdu = {'get-request', #'PDU'{'variable-bindings' = ReqVbs}},
+	case request_pdu(ReqPdu, Timeout, Retries, S) of
+		{ok, Pdu = #'PDU'{'variable-bindings' = Vbs}} ->
+			case Vbs of
+				[#'VarBind'{name = Oid, v = V}] ->
+					{ok, v_to_value(V)};
+				_ ->
+					{error, {unexpected_varbinds, Vbs}}
+			end;
+		Err -> Err
+	end.
+
+-spec close(client()) -> ok.
+close(#snmerp{sock = Sock}) ->
+	gen_udp:close(Sock).
+
+request_pdu(_, _, 0, _) -> {error, timeout};
+request_pdu({PduType, Pdu = #'PDU'{}}, Timeout, Retries, S = #snmerp{sock = Sock, ip = Ip, community = Com}) ->
+	<<_:1, RequestId:31/big>> = crypto:rand_bytes(4),
+	Pdu2 = Pdu#'PDU'{'request-id' = RequestId, 'error-status' = noError, 'error-index' = 0},
+	{ok, PduBin} = 'SNMPv2':encode('PDUs', {PduType, Pdu2}),
+	Msg = #'Message'{version = 'version-2c', community = Com, data = PduBin},
+	{ok, MsgBin} = 'SNMPv2':encode('Message', Msg),
+	ok = inet:setopts(Sock, [{active, once}]),
+	ok = gen_udp:send(Sock, Ip, 161, MsgBin),
+	case recv_reqid(Timeout, Sock, Ip, 161, RequestId) of
+		{ok, {'response', ResponsePdu}} ->
+			#'PDU'{'error-status' = ErrSt} = ResponsePdu,
+			case ErrSt of
+				'noError' -> {ok, ResponsePdu};
+				_ -> {error, ErrSt}
+			end;
+		{ok, {RespPduType, _}} ->
+			{error, {unexpected_pdu, RespPduType}};
+		{error, timeout} ->
+			request_pdu({PduType, Pdu}, Timeout, Retries - 1, S);
+		Err ->
+			Err
+	end.
+
+recv_reqid(Timeout, Sock, Ip, Port, ReqId) ->
+	receive
+		{udp, Sock, Ip, Port, ReplyBin} ->
+			case 'SNMPv2':decode('Message', ReplyBin) of
+				{ok, #'Message'{version = 'version-2c', data = PduBin}} ->
+					case 'SNMPv2':decode('PDUs', PduBin) of
+						{ok, {PduType, Pdu = #'PDU'{'request-id' = ReqId}}} ->
+							{ok, {PduType, Pdu}};
+						{ok, {PduType, Pdu = #'PDU'{}}} ->
+							ok = inet:setopts(Sock, [{active, once}]),
+							recv_reqid(Timeout, Sock, Ip, Port, ReqId);
+						_ ->
+							{error, bad_pdu_decode}
+					end;
+				_ ->
+					{error, bad_message_decode}
+			end
+	after Timeout ->
+		{error, timeout}
+	end.
+
+v_to_value({'unSpecified', _}) -> null;
+v_to_value({'noSuchObject', _}) -> not_found;
+v_to_value('noSuchObject') -> not_found;
+v_to_value({'noSuchInstance', _}) -> not_found;
+v_to_value('noSuchInstance') -> not_found;
+v_to_value({value, {simple, {'string-value', Str}}}) when is_binary(Str) -> Str;
+v_to_value({value, {simple, {'integer-value', Int}}}) when is_integer(Int) -> Int;
+v_to_value({value, {simple, {'objectID-value', Oid}}}) when is_tuple(Oid) -> Oid;
+v_to_value({value, {'application-wide', {'counter-value', Int}}}) when is_integer(Int) -> Int;
+v_to_value({value, {'application-wide', {'timeticks-value', Int}}}) when is_integer(Int) -> Int;
+v_to_value({value, {'application-wide', {'big-counter-value', Int}}}) when is_integer(Int) -> Int;
+v_to_value({value, {'application-wide', {'unsigned-integer-value', Int}}}) when is_integer(Int) -> Int;
+v_to_value({value, {'application-wide', {'ipAddress-value', IpBin}}}) when is_binary(IpBin) ->
+	<<A,B,C,D>> = IpBin, {A,B,C,D};
+v_to_value({value, V}) -> error({unknown_value_type, V}).
+
+-spec var_to_oid(var(), client()) -> oid().
+var_to_oid(Name, #snmerp{mibs = Mibs}) when is_list(Name) ->
+	case snmerp_mib:name_to_oid(Name, Mibs) of
+		not_found -> error(bad_var_name);
+		Oid -> list_to_tuple(Oid)
+	end;
+var_to_oid({Name, Index}, #snmerp{mibs = Mibs}) when is_list(Name) ->
+	Appendage = case Index of
+		I when is_integer(I) -> [I];
+		L when is_list(L) -> L
+	end,
+	case snmerp_mib:name_to_oid(Name, Mibs) of
+		not_found -> error(bad_var_name);
+		Oid -> list_to_tuple(Oid ++ Appendage)
+	end;
+var_to_oid(OidTuple, #snmerp{}) when is_tuple(OidTuple) ->
+	OidTuple.
