@@ -61,6 +61,7 @@
 -export([get/2, get/3]).
 -export([walk/2, walk/3]).
 -export([set/3, set/4]).
+-export([table/3, table/4]).
 
 -spec open(inet:ip_address() | inet:hostname(), options()) -> {ok, client()} | {error, term()}.
 open(Address, Options) ->
@@ -100,7 +101,7 @@ get(S = #snmerp{}, Var, Opts) ->
 		{ok, #'PDU'{'variable-bindings' = Vbs}} ->
 			case Vbs of
 				[#'VarBind'{name = Oid, v = V}] ->
-					{ok, v_to_value(V)};
+					{ok, v_to_value(V, Oid, S)};
 				_ ->
 					{error, {unexpected_varbinds, Vbs}}
 			end;
@@ -116,7 +117,7 @@ set(S = #snmerp{}, Var, Value, Opts) ->
 	Timeout = proplists:get_value(timeout, Opts, S#snmerp.timeout),
 	Retries = proplists:get_value(retries, Opts, S#snmerp.retries),
 	Oid = var_to_oid(Var, S),
-	V = value_to_v(Value),
+	V = value_to_v(Value, Oid, S),
 	ReqVbs = [#'VarBind'{name = Oid, v = V}],
 	ReqPdu = {'set-request', #'PDU'{'variable-bindings' = ReqVbs}},
 	case request_pdu(ReqPdu, Timeout, Retries, S) of
@@ -141,7 +142,7 @@ walk(S = #snmerp{}, Var, Opts) ->
 				case gb_sets:is_element(Index, Seen) of
 					true -> {Values, Seen};
 					false ->
-						Values2 = [{Index, v_to_value(V)} | Values],
+						Values2 = [{Index, v_to_value(V, VbOid, S)} | Values],
 						Seen2 = gb_sets:add_element(Index, Seen),
 						{Values2, Seen2}
 				end
@@ -171,6 +172,72 @@ walk_next(S = #snmerp{}, BaseOid, Oid, Timeout, Retries, MaxBulk) ->
 		Err -> Err
 	end.
 
+-spec table(client(), var(), req_options()) -> {ok, Columns :: [string()], Rows :: [tuple()]} | {error, term()}.
+table(S = #snmerp{}, Var, Opts) ->
+	{error, nimpl}.
+
+-spec table(client(), var(), [var()], req_options()) -> {ok, Rows :: [tuple()]} | {error, term()}.
+table(S = #snmerp{}, Var, Columns, Opts) ->
+	TableOid = var_to_oid(Var, S),
+
+	{_TblInfo, ColMes} = snmerp_mib:table_info(tuple_to_list(TableOid), S#snmerp.mibs),
+	ColSet = trie:new([Me#me.oid || Me <- ColMes]),
+
+	ColumnOids = [var_to_oid(C, S) || C <- Columns],
+	ColumnIdxs = trie:new(lists:zip([tuple_to_list(T) || T <- ColumnOids], lists:seq(1, length(ColumnOids)))),
+	BaseRow = list_to_tuple(lists:seq(1, length(ColumnOids))),
+	BaseRowArray = array:new([{default, BaseRow}]),
+	SortedColumnOids = lists:sort(ColumnOids),
+
+	case lists:dropwhile(fun(COid) -> trie:is_prefixed(tuple_to_list(COid), ColSet) end, ColumnOids) of
+		[NonMatch | _] -> error({column_outside_table, NonMatch, TableOid});
+		[] ->
+			Timeout = proplists:get_value(timeout, Opts, S#snmerp.timeout),
+			Retries = proplists:get_value(retries, Opts, S#snmerp.retries),
+			MaxBulk = proplists:get_value(max_bulk, Opts, S#snmerp.max_bulk),
+			case table_next(S, SortedColumnOids, Timeout, Retries, MaxBulk, BaseRowArray, ColumnIdxs) of
+				{ok, RowArray} -> {ok, array:sparse_to_list(RowArray)};
+				Err -> Err
+			end
+	end.
+
+table_next(S = #snmerp{}, Oids = [Oid | RestOids], Timeout, Retries, MaxBulk, RowArray, ColumnIdxs) ->
+	ReqVbs = [#'VarBind'{name = Oid, v = {unSpecified,'NULL'}}],
+	ReqPdu = {'get-bulk-request', #'BulkPDU'{'non-repeaters' = 0, 'max-repetitions' = MaxBulk, 'variable-bindings' = ReqVbs}},
+	case request_pdu(ReqPdu, Timeout, Retries, S) of
+		{ok, #'PDU'{'variable-bindings' = Vbs}} ->
+			table_next_vbs(S, Oids, Timeout, Retries, MaxBulk, RowArray, ColumnIdxs, Vbs);
+		Err -> Err
+	end.
+
+table_next_vbs(S = #snmerp{}, Oids = [Oid | RestOids], Timeout, Retries, MaxBulk, RowArray, ColumnIdxs, Vbs) ->
+	{InPrefix, OutOfPrefix} = lists:splitwith(
+		fun(#'VarBind'{name = ThisOid}) -> is_tuple_prefix(Oid, ThisOid) end, Vbs),
+	{ok, _, ColumnIdx} = trie:find_prefix_longest(tuple_to_list(Oid), ColumnIdxs),
+	RowArray2 = lists:foldl(fun(#'VarBind'{name = ThisOid, v = V}, RA) ->
+		RowIdx = oid_single_index(Oid, ThisOid),
+		Row = array:get(RowIdx, RA),
+		Row2 = setelement(ColumnIdx, Row, v_to_value(V, ThisOid, S)),
+		array:set(RowIdx, Row2, RA)
+	end, RowArray, InPrefix),
+	case OutOfPrefix of
+		[] ->
+			LastVb = lists:last(InPrefix),
+			NewOid = LastVb#'VarBind'.name,
+			table_next(S, [NewOid | RestOids], Timeout, Retries, MaxBulk, RowArray2, ColumnIdxs);
+
+		[FirstOut | _] ->
+			case RestOids of
+				[NextOid | _] ->
+					case is_tuple_prefix(NextOid, FirstOut) of
+						true -> table_next_vbs(S, RestOids, Timeout, Retries, MaxBulk, RowArray2, ColumnIdxs, OutOfPrefix);
+						false -> table_next(S, RestOids, Timeout, Retries, MaxBulk, RowArray2, ColumnIdxs)
+					end;
+				[] ->
+					{ok, RowArray2}
+			end
+	end.
+
 -spec close(client()) -> ok.
 close(#snmerp{sock = Sock}) ->
 	gen_udp:close(Sock).
@@ -185,6 +252,12 @@ is_tuple_prefix(Tuple1, Tuple2) when is_tuple(Tuple1) and is_tuple(Tuple2) ->
 		false ->
 			false
 	end.
+
+%% @internal
+-spec oid_single_index(oid(), oid()) -> integer().
+oid_single_index(BaseOid, Oid) when is_tuple(BaseOid) and is_tuple(Oid) ->
+	IdxList = [element(N, Oid) || N <- lists:seq(tuple_size(BaseOid) + 1, tuple_size(Oid))],
+	binary:decode_unsigned(list_to_binary(IdxList)).
 
 %% @internal
 -spec oid_index(oid(), oid()) -> integer() | oid().
@@ -249,36 +322,49 @@ recv_reqid(Timeout, Sock, Ip, Port, ReqId) ->
 		{error, timeout}
 	end.
 
--spec v_to_value(term()) -> value().
-v_to_value({'unSpecified', _}) -> null;
-v_to_value({'noSuchObject', _}) -> not_found;
-v_to_value('noSuchObject') -> not_found;
-v_to_value({'noSuchInstance', _}) -> not_found;
-v_to_value('noSuchInstance') -> not_found;
-v_to_value({value, {simple, {'string-value', Str}}}) when is_binary(Str) -> Str;
-v_to_value({value, {simple, {'integer-value', Int}}}) when is_integer(Int) -> Int;
-v_to_value({value, {simple, {'objectID-value', Oid}}}) when is_tuple(Oid) -> Oid;
-v_to_value({value, {'application-wide', {'counter-value', Int}}}) when is_integer(Int) -> Int;
-v_to_value({value, {'application-wide', {'timeticks-value', Int}}}) when is_integer(Int) -> Int;
-v_to_value({value, {'application-wide', {'big-counter-value', Int}}}) when is_integer(Int) -> Int;
-v_to_value({value, {'application-wide', {'unsigned-integer-value', Int}}}) when is_integer(Int) -> Int;
-v_to_value({value, {'application-wide', {'ipAddress-value', IpBin}}}) when is_binary(IpBin) ->
+-spec v_to_value(term(), oid(), client()) -> value().
+v_to_value({'unSpecified', _}, _, _) -> null;
+v_to_value({'noSuchObject', _}, _, _) -> not_found;
+v_to_value('noSuchObject', _, _) -> not_found;
+v_to_value({'noSuchInstance', _}, _, _) -> not_found;
+v_to_value('noSuchInstance', _, _) -> not_found;
+v_to_value({value, {simple, {'string-value', Str}}}, _, _) when is_binary(Str) -> Str;
+v_to_value({value, {simple, {'integer-value', Int}}}, Oid, S) when is_integer(Int) ->
+	case snmerp_mib:oid_prefix_enum(tuple_to_list(Oid), S#snmerp.mibs) of
+		not_found -> Int;
+		Enum -> proplists:get_value(Int, Enum, Int)
+	end;
+v_to_value({value, {simple, {'objectID-value', Oid}}}, _, _) when is_tuple(Oid) -> Oid;
+v_to_value({value, {'application-wide', {'counter-value', Int}}}, _, _) when is_integer(Int) -> Int;
+v_to_value({value, {'application-wide', {'timeticks-value', Int}}}, _, _) when is_integer(Int) -> Int;
+v_to_value({value, {'application-wide', {'big-counter-value', Int}}}, _, _) when is_integer(Int) -> Int;
+v_to_value({value, {'application-wide', {'unsigned-integer-value', Int}}}, _, _) when is_integer(Int) -> Int;
+v_to_value({value, {'application-wide', {'ipAddress-value', IpBin}}}, _, _) when is_binary(IpBin) ->
 	<<A,B,C,D>> = IpBin, {A,B,C,D};
-v_to_value({value, V}) -> error({unknown_value_type, V}).
+v_to_value({value, V}, _, _) -> error({unknown_value_type, V}).
 
--spec value_to_v(value()) -> term().
-value_to_v(null) ->
+-spec value_to_v(value(), oid(), client()) -> term().
+value_to_v(null, _, _) ->
 	{'unSpecified', 'NULL'};
-value_to_v(Binary) when is_binary(Binary) ->
+value_to_v(Binary, _, _) when is_binary(Binary) ->
 	{value, {simple, {'string-value', Binary}}};
-value_to_v({A,B,C,D}) when (A >= 0) and (A < 256) and (B >= 0) and (B < 256) and
+value_to_v({A,B,C,D}, _, _) when (A >= 0) and (A < 256) and (B >= 0) and (B < 256) and
 						(C >= 0) and (C < 256) and (D >= 0) and (D < 256) ->
 	{value, {'application-wide', {'ipAddress-value', <<A,B,C,D>>}}};
-value_to_v(Tuple) when is_tuple(Tuple) ->
+value_to_v(Tuple, _, _) when is_tuple(Tuple) ->
 	{value, {simple, {'objectID-value', Tuple}}};
-value_to_v(Int) when is_integer(Int) ->
+value_to_v(Int, _, _) when is_integer(Int) ->
 	{value, {simple, {'integer-value', Int}}};
-value_to_v(Other) ->
+value_to_v(Str, Oid, S) when is_list(Str) ->
+	case snmerp_mib:oid_prefix_enum(tuple_to_list(Oid), S#snmerp.mibs) of
+		not_found -> error({unknown_value_type, Str});
+		Enum ->
+			case [{I, S} || {I, S} <- Enum, S =:= Str] of
+				[{Int, Str}] -> {value, {simple, {'integer-value', Int}}};
+				_ -> error({unknown_enum_value, Str})
+			end
+	end;
+value_to_v(Other, _, _) ->
 	error({unknown_value_type, Other}).
 
 -spec var_to_oid(var(), client()) -> oid().
