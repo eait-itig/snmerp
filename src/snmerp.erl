@@ -282,7 +282,10 @@ is_tuple_prefix(Tuple1, Tuple2) when is_tuple(Tuple1) and is_tuple(Tuple2) ->
 -spec oid_single_index(oid(), oid()) -> integer().
 oid_single_index(BaseOid, Oid) when is_tuple(BaseOid) and is_tuple(Oid) ->
 	IdxList = [element(N, Oid) || N <- lists:seq(tuple_size(BaseOid) + 1, tuple_size(Oid))],
-	binary:decode_unsigned(list_to_binary(IdxList)).
+	Bin = lists:foldl(fun(I, Bin) ->
+		<<Bin/binary, I:32/big>>
+	end, <<>>, IdxList),
+	binary:decode_unsigned(Bin).
 
 %% @internal
 -spec oid_index(oid(), oid()) -> integer() | oid().
