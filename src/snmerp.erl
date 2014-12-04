@@ -269,12 +269,16 @@ table_next_vbs(S = #snmerp{}, Oids = [Oid | RestOids], Timeout, Retries, MaxBulk
 			NewOid = LastVb#'VarBind'.name,
 			table_next(S, Oids, NewOid, Timeout, Retries, MaxBulk, RowArray2, ColumnIdxs);
 
-		[FirstOut | _] ->
+		_ ->
 			case RestOids of
 				[NextOid | _] ->
-					case is_tuple_prefix(NextOid, FirstOut) of
-						true -> table_next_vbs(S, RestOids, Timeout, Retries, MaxBulk, RowArray2, ColumnIdxs, OutOfPrefix);
-						false -> table_next(S, RestOids, NextOid, Timeout, Retries, MaxBulk, RowArray2, ColumnIdxs)
+					case lists:dropwhile(fun(ThisOid) -> not is_tuple_prefix(NextOid, ThisOid) end, OutOfPrefix) of
+						NextVbs when (length(NextVbs) > 0) ->
+							table_next_vbs(S, RestOids, Timeout, Retries, MaxBulk,
+								RowArray2, ColumnIdxs, NextVbs);
+						_ ->
+							table_next(S, RestOids, NextOid, Timeout, Retries,
+								MaxBulk, RowArray2, ColumnIdxs)
 					end;
 				[] ->
 					{ok, RowArray2}
