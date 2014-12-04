@@ -26,14 +26,15 @@
 %%
 
 %% @author Alex Wilson <alex@uq.edu.au>
-%% @doc snmerp app module
--module(snmerp_app).
+%% @doc snmerp sup module
+-module(snmerp_sup).
 
--behaviour(application).
+-behaviour(supervisor).
 
--export([start/2, stop/1]).
+-export([start_link/0, init/1]).
 
-start(_StartType, _Args) ->
-	snmerp_sup:start_link().
+start_link() ->
+	supervisor:start_link(?MODULE, []).
 
-stop(_State) -> ok.
+init([]) ->
+	{ok, {{one_for_one,30,30}, []}}.
