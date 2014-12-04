@@ -81,20 +81,26 @@ open(Address, Options) ->
 		false ->
 			case inet_res:getbyname(Address, a) of
 				{ok, #hostent{h_addr_list = [HAddr | _]}} -> HAddr;
-				_ -> error(bad_hostname)
+				_ -> undefined
 			end
 	end,
-	{ok, Sock} = gen_udp:open(0, [binary, {active, false}]),
-	Community = proplists:get_value(community, Options, "public"),
-	Mibs = case proplists:get_value(mibs, Options) of
-		undefined -> snmerp_mib:default();
-		M -> M
-	end,
-	Timeout = proplists:get_value(timeout, Options, 5000),
-	MaxBulk = proplists:get_value(max_bulk, Options, 20),
-	Retries = proplists:get_value(retries, Options, 3),
-	DispStr = proplists:get_value(strings, Options, binary) =:= list,
-	{ok, #snmerp{ip = Ip, sock = Sock, community = Community, mibs = Mibs, timeout = Timeout, max_bulk = MaxBulk, retries = Retries, disp_str = DispStr}}.
+	case Ip of
+		undefined ->
+			{error, bad_hostname};
+		_ ->
+
+			{ok, Sock} = gen_udp:open(0, [binary, {active, false}]),
+			Community = proplists:get_value(community, Options, "public"),
+			Mibs = case proplists:get_value(mibs, Options) of
+				undefined -> snmerp_mib:default();
+				M -> M
+			end,
+			Timeout = proplists:get_value(timeout, Options, 5000),
+			MaxBulk = proplists:get_value(max_bulk, Options, 20),
+			Retries = proplists:get_value(retries, Options, 3),
+			DispStr = proplists:get_value(strings, Options, binary) =:= list,
+			{ok, #snmerp{ip = Ip, sock = Sock, community = Community, mibs = Mibs, timeout = Timeout, max_bulk = MaxBulk, retries = Retries, disp_str = DispStr}}
+	end.
 
 %% @doc Get a single object
 -spec get(client(), var()) -> {ok, value()} | {error, term()}.
