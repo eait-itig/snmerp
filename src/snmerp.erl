@@ -86,9 +86,7 @@ open(Address, Options) ->
 	{ok, Sock} = gen_udp:open(0, [binary, {active, false}]),
 	Community = proplists:get_value(community, Options, "public"),
 	Mibs = case proplists:get_value(mibs, Options) of
-		undefined ->
-			{ok, M} = snmerp_mib:default(),
-			M;
+		undefined -> snmerp_mib:default();
 		M -> M
 	end,
 	Timeout = proplists:get_value(timeout, Options, 5000),
