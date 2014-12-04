@@ -26,7 +26,10 @@
 %%
 
 %% @author Alex Wilson <alex@uq.edu.au>
-%% @doc snmerp mib api
+%% @doc Functions to create and manipulate MIB sets.
+%%
+%% MIB sets can be provided to the snmerp client module to resolve
+%% names and metadata about requested objects.
 -module(snmerp_mib).
 
 -include_lib("snmp/include/snmp_types.hrl").
@@ -40,32 +43,36 @@
 	tables = trie:new() :: trie:trie(),
 	enums = trie:new() :: trie:trie()}).
 
--opaque mibs() :: #mibdat{}.
+-opaque mibset() :: #mibdat{}.
 -type oid() :: [integer()].
 -type name() :: string().
 -type me() :: #me{}.
 -type enum() :: [{integer(), atom()}].
--export_type([mibs/0]).
+-export_type([mibset/0]).
 
--spec empty() -> mibs().
+%% @doc Returns an empty MIB set
+-spec empty() -> mibset().
 empty() ->
 	#mibdat{}.
 
--spec default() -> mibs().
+%% @doc Returns the default MIB set (with SNMPv2-MIB only)
+-spec default() -> mibset().
 default() ->
 	case snmerp_mib:add_dir(filename:join([code:priv_dir(snmerp), "mibs"]), snmerp_mib:empty()) of
 		{ok, Mibs} -> Mibs;
 		{error, Err} -> error(Err)
 	end.
 
--spec name_to_oid(name(), mibs()) -> oid() | not_found.
+%% @doc Resolves a string name to an OID
+-spec name_to_oid(name(), mibset()) -> oid() | not_found.
 name_to_oid(Name, #mibdat{name2oid = Name2Oid}) ->
 	case trie:find(Name, Name2Oid) of
 		{ok, Oid} -> Oid;
 		_ -> not_found
 	end.
 
--spec table_info(oid(), mibs()) -> {#table_info{}, Augmented :: [me()], Columns :: [me()]} | not_found.
+%% @private
+-spec table_info(oid(), mibset()) -> {#table_info{}, Augmented :: [me()], Columns :: [me()]} | not_found.
 table_info(Oid, #mibdat{tables = Tables}) ->
 	case trie:find(Oid, Tables) of
 		{ok, Mes} ->
@@ -75,28 +82,32 @@ table_info(Oid, #mibdat{tables = Tables}) ->
 		_ -> not_found
 	end.
 
--spec oid_to_prefix_me(oid(), mibs()) -> me() | not_found.
+%% @private
+-spec oid_to_prefix_me(oid(), mibset()) -> me() | not_found.
 oid_to_prefix_me(Oid, #mibdat{oid2me = Oid2Me}) ->
 	case trie:find_prefix_longest(Oid, Oid2Me) of
 		{ok, _FoundOid, Me} -> Me;
 		_ -> not_found
 	end.
 
--spec oid_prefix_enum(oid(), mibs()) -> enum() | not_found.
+%% @private
+-spec oid_prefix_enum(oid(), mibset()) -> enum() | not_found.
 oid_prefix_enum(Oid, #mibdat{enums = Enums}) ->
 	case trie:find_prefix_longest(Oid, Enums) of
 		{ok, _FoundOid, Enum} -> Enum;
 		_ -> not_found
 	end.
 
--spec oid_to_me(oid(), mibs()) -> me() | not_found.
+%% @private
+-spec oid_to_me(oid(), mibset()) -> me() | not_found.
 oid_to_me(Oid, #mibdat{oid2me = Oid2Me}) ->
 	case trie:find(Oid, Oid2Me) of
 		{ok, Me} -> Me;
 		_ -> not_found
 	end.
 
--spec add_file(Path :: string(), mibs()) -> {ok, mibs()} | {error, Reason :: term()}.
+%% @doc Adds a .bin file to a MIB set.
+-spec add_file(Path :: string(), mibset()) -> {ok, mibset()} | {error, Reason :: term()}.
 add_file(Path, D = #mibdat{}) ->
 	case file:read_file(Path) of
 		{ok, Bin} ->
@@ -157,7 +168,8 @@ add_file(Path, D = #mibdat{}) ->
 		{error, Reason} -> {error, Reason}
 	end.
 
--spec add_dir(Path :: string(), mibs()) -> {ok, mibs()} | {error, Reason :: term()}.
+%% @doc Adds a directory of .bin files to a MIB set.
+-spec add_dir(Path :: string(), mibset()) -> {ok, mibset()} | {error, Reason :: term()}.
 add_dir(Path, D = #mibdat{}) ->
 	case file:list_dir(Path) of
 		{ok, Fnames} ->

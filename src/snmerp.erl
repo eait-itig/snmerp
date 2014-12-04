@@ -26,15 +26,21 @@
 %%
 
 %% @author Alex Wilson <alex@uq.edu.au>
-%% @doc snmerp public api
+%% @doc Super-simple SNMP client.
+%%
+%% A simple SNMP client without any processes or global state. Minimal
+%% configuration, and absolutely no config files.
 -module(snmerp).
 
--include("include/SNMPv2.hrl").
 -include_lib("kernel/include/inet.hrl").
 -include_lib("snmp/include/snmp_types.hrl").
 
+-ifndef(EDOC).
+-include("include/SNMPv2.hrl").
+-endif.
+
 -record(snmerp, {
-	mibs :: snmerp_mib:mibs(),
+	mibs :: snmerp_mib:mibset(),
 	sock :: term(),
 	ip :: inet:ip_address(),
 	community :: string(),
@@ -47,7 +53,7 @@
 
 -type req_option() :: {timeout, Ms :: integer()} | {max_bulk, integer()} | {retries, integer()}.
 -type req_options() :: [req_option()].
--type option() :: {community, string()} | {mibs, snmerp_mib:mibs()} | req_option().
+-type option() :: {community, string()} | {mibs, snmerp_mib:mibset()} | req_option().
 -type options() :: [option()].
 
 -type oid() :: tuple().
@@ -63,6 +69,10 @@
 -export([set/3, set/4]).
 -export([table/3, table/4]).
 
+%% @doc Creates an SNMP client.
+%%
+%% The client record returned by this function must be provided to other snmerp:
+%% functions.
 -spec open(inet:ip_address() | inet:hostname(), options()) -> {ok, client()} | {error, term()}.
 open(Address, Options) ->
 	Ip = case is_tuple(Address) of
@@ -86,10 +96,12 @@ open(Address, Options) ->
 	Retries = proplists:get_value(retries, Options, 3),
 	{ok, #snmerp{ip = Ip, sock = Sock, community = Community, mibs = Mibs, timeout = Timeout, max_bulk = MaxBulk, retries = Retries}}.
 
+%% @doc Get a single object
 -spec get(client(), var()) -> {ok, value()} | {error, term()}.
 get(S = #snmerp{}, Var) ->
 	get(S, Var, []).
 
+%% @doc Get a single object
 -spec get(client(), var(), req_options()) -> {ok, value()} | {error, term()}.
 get(S = #snmerp{}, Var, Opts) ->
 	Timeout = proplists:get_value(timeout, Opts, S#snmerp.timeout),
@@ -108,10 +120,12 @@ get(S = #snmerp{}, Var, Opts) ->
 		Err -> Err
 	end.
 
+%% @doc Set the value of a single object.
 -spec set(client(), var(), value()) -> ok | {error, term()}.
 set(S = #snmerp{}, Var, Value) ->
 	set(S, Var, Value, []).
 
+%% @doc Set the value of a single object.
 -spec set(client(), var(), value(), req_options()) -> ok | {error, term()}.
 set(S = #snmerp{}, Var, Value, Opts) ->
 	Timeout = proplists:get_value(timeout, Opts, S#snmerp.timeout),
@@ -125,10 +139,12 @@ set(S = #snmerp{}, Var, Value, Opts) ->
 		Err -> Err
 	end.
 
+%% @doc Walk a sub-tree of objects, returning all within.
 -spec walk(client(), var()) -> {ok, [{index(), value()}]} | {error, term()}.
 walk(S = #snmerp{}, Var) ->
 	walk(S, Var, []).
 
+%% @doc Walk a sub-tree of objects, returning all within.
 -spec walk(client(), var(), req_options()) -> {ok, [{index(), value()}]} | {error, term()}.
 walk(S = #snmerp{}, Var, Opts) ->
 	Timeout = proplists:get_value(timeout, Opts, S#snmerp.timeout),
@@ -173,6 +189,7 @@ walk_next(S = #snmerp{}, BaseOid, Oid, Timeout, Retries, MaxBulk) ->
 		Err -> Err
 	end.
 
+%% @doc Returns the columns and rows of a table of objects.
 -spec table(client(), var(), req_options()) -> {ok, Columns :: [string()], Rows :: [tuple()]} | {error, term()}.
 table(S = #snmerp{}, Var, Opts) ->
 	TableOid = var_to_oid(Var, S),
@@ -194,6 +211,7 @@ table(S = #snmerp{}, Var, Opts) ->
 		Err -> Err
 	end.
 
+%% @doc Returns the rows of a table of objects, selecting particular columns.
 -spec table(client(), var(), [var()], req_options()) -> {ok, Rows :: [tuple()]} | {error, term()}.
 table(S = #snmerp{}, Var, Columns, Opts) ->
 	TableOid = var_to_oid(Var, S),
@@ -265,11 +283,12 @@ table_next_vbs(S = #snmerp{}, Oids = [Oid | RestOids], Timeout, Retries, MaxBulk
 			end
 	end.
 
+%% @doc Close and clean up an SNMP client.
 -spec close(client()) -> ok.
 close(#snmerp{sock = Sock}) ->
 	gen_udp:close(Sock).
 
-%% @internal
+%% @private
 -spec is_tuple_prefix(tuple(), tuple()) -> boolean().
 is_tuple_prefix(Tuple1, Tuple2) when is_tuple(Tuple1) and is_tuple(Tuple2) ->
 	MinLen = tuple_size(Tuple1),
@@ -280,7 +299,7 @@ is_tuple_prefix(Tuple1, Tuple2) when is_tuple(Tuple1) and is_tuple(Tuple2) ->
 			false
 	end.
 
-%% @internal
+%% @private
 -spec oid_single_index(oid(), oid()) -> integer().
 oid_single_index(BaseOid, Oid) when is_tuple(BaseOid) and is_tuple(Oid) ->
 	IdxList = [element(N, Oid) || N <- lists:seq(tuple_size(BaseOid) + 1, tuple_size(Oid))],
@@ -289,7 +308,7 @@ oid_single_index(BaseOid, Oid) when is_tuple(BaseOid) and is_tuple(Oid) ->
 	end, <<>>, IdxList),
 	binary:decode_unsigned(Bin).
 
-%% @internal
+%% @private
 -spec oid_index(oid(), oid()) -> integer() | oid().
 oid_index(BaseOid, Oid) when is_tuple(BaseOid) and is_tuple(Oid) ->
 	IdxList = [element(N, Oid) || N <- lists:seq(tuple_size(BaseOid) + 1, tuple_size(Oid))],
@@ -298,7 +317,7 @@ oid_index(BaseOid, Oid) when is_tuple(BaseOid) and is_tuple(Oid) ->
 		_ -> list_to_tuple(IdxList)
 	end.
 
-%% @internal
+%% @private
 -spec request_pdu({atom(), #'PDU'{} | #'BulkPDU'{}}, integer(), integer(), client()) -> {ok, #'PDU'{}} | {error, term()}.
 request_pdu(_, _, 0, _) -> {error, timeout};
 request_pdu({PduType, Pdu}, Timeout, Retries, S = #snmerp{sock = Sock, ip = Ip, community = Com}) ->
@@ -329,7 +348,7 @@ request_pdu({PduType, Pdu}, Timeout, Retries, S = #snmerp{sock = Sock, ip = Ip, 
 			Err
 	end.
 
-%% @internal
+%% @private
 -spec recv_reqid(integer(), term(), inet:ip_address(), integer(), integer()) -> {ok, {atom(), #'PDU'{}}} | {error, term()}.
 recv_reqid(Timeout, Sock, Ip, Port, ReqId) ->
 	receive
