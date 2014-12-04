@@ -35,13 +35,14 @@
 -include_lib("snmp/include/snmp_types.hrl").
 
 -export([empty/0, add_file/2, add_dir/2, name_to_oid/2, oid_to_prefix_me/2,
-	oid_to_me/2, oid_prefix_enum/2, table_info/2, default/0]).
+	oid_to_me/2, oid_prefix_enum/2, table_info/2, default/0, oid_is_string/2]).
 
 -record(mibdat, {
 	name2oid = trie:new() :: trie:trie(),
 	oid2me = trie:new() :: trie:trie(),
 	tables = trie:new() :: trie:trie(),
-	enums = trie:new() :: trie:trie()}).
+	enums = trie:new() :: trie:trie(),
+	strings = trie:new() :: trie:trie()}).
 
 -opaque mibset() :: #mibdat{}.
 -type oid() :: [integer()].
@@ -91,6 +92,14 @@ oid_to_prefix_me(Oid, #mibdat{oid2me = Oid2Me}) ->
 	end.
 
 %% @private
+-spec oid_is_string(oid(), mibset()) -> boolean().
+oid_is_string(Oid, #mibdat{strings = Strings}) ->
+	case trie:find_prefix_longest(Oid, Strings) of
+		{ok, _, true} -> true;
+		_ -> false
+	end.
+
+%% @private
 -spec oid_prefix_enum(oid(), mibset()) -> enum() | not_found.
 oid_prefix_enum(Oid, #mibdat{enums = Enums}) ->
 	case trie:find_prefix_longest(Oid, Enums) of
@@ -112,7 +121,7 @@ add_names_enums(#mib{mes = Mes}, D = #mibdat{}) ->
 		(Me = #me{entrytype = Type}, DD = #mibdat{})
 				when (Type =:= table) or (Type =:= table_column) or (Type =:= variable) ->
 			#me{aliasname = NameAtom, oid = Oid, asn1_type = Asn1Type} = Me,
-			#mibdat{name2oid = Name2Oid, oid2me = Oid2Me, enums = Enums} = DD,
+			#mibdat{name2oid = Name2Oid, oid2me = Oid2Me, enums = Enums, strings = Strings} = DD,
 			Name2Oid2 = trie:store(atom_to_list(NameAtom), Oid, Name2Oid),
 			Oid2Me2 = trie:store(Oid, Me, Oid2Me),
 			Enums2 = case Asn1Type of
@@ -125,7 +134,12 @@ add_names_enums(#mib{mes = Mes}, D = #mibdat{}) ->
 					end;
 				_ -> Enums
 			end,
-			DD#mibdat{name2oid = Name2Oid2, oid2me = Oid2Me2, enums = Enums2};
+			Strings2 = case Asn1Type of
+				#asn1_type{aliasname = 'DisplayString'} ->
+					trie:store(Oid, true, Strings);
+				_ -> Strings
+			end,
+			DD#mibdat{name2oid = Name2Oid2, oid2me = Oid2Me2, enums = Enums2, strings = Strings2};
 		(_, DD) -> DD
 	end, D, Mes).
 

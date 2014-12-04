@@ -46,14 +46,15 @@
 	community :: string(),
 	timeout :: integer(),
 	max_bulk :: integer(),
-	retries :: integer()}).
+	retries :: integer(),
+	disp_str :: boolean()}).
 
 -opaque client() :: #snmerp{}.
 -export_type([client/0]).
 
 -type req_option() :: {timeout, Ms :: integer()} | {max_bulk, integer()} | {retries, integer()} | trust_me.
 -type req_options() :: [req_option()].
--type option() :: {community, string()} | {mibs, snmerp_mib:mibset()} | req_option().
+-type option() :: {community, string()} | {mibs, snmerp_mib:mibset()} | {strings, list | binary} | req_option().
 -type options() :: [option()].
 
 -type oid() :: tuple().
@@ -61,7 +62,7 @@
 -type index() :: integer() | [integer()].
 -type var() :: oid() | name() | {name(), index()}.
 
--type value() :: binary() | integer() | oid() | inet:ip_address() | null | not_found.
+-type value() :: binary() | string() | integer() | oid() | inet:ip_address() | null | not_found.
 
 -export([open/2, close/1]).
 -export([get/2, get/3]).
@@ -92,7 +93,8 @@ open(Address, Options) ->
 	Timeout = proplists:get_value(timeout, Options, 5000),
 	MaxBulk = proplists:get_value(max_bulk, Options, 20),
 	Retries = proplists:get_value(retries, Options, 3),
-	{ok, #snmerp{ip = Ip, sock = Sock, community = Community, mibs = Mibs, timeout = Timeout, max_bulk = MaxBulk, retries = Retries}}.
+	DispStr = proplists:get_value(strings, Options, binary) =:= list,
+	{ok, #snmerp{ip = Ip, sock = Sock, community = Community, mibs = Mibs, timeout = Timeout, max_bulk = MaxBulk, retries = Retries, disp_str = DispStr}}.
 
 %% @doc Get a single object
 -spec get(client(), var()) -> {ok, value()} | {error, term()}.
@@ -403,6 +405,11 @@ v_to_value({'noSuchObject', _}, _, _) -> not_found;
 v_to_value('noSuchObject', _, _) -> not_found;
 v_to_value({'noSuchInstance', _}, _, _) -> not_found;
 v_to_value('noSuchInstance', _, _) -> not_found;
+v_to_value({value, {simple, {'string-value', Str}}}, Oid, S = #snmerp{disp_str = true}) when is_binary(Str) ->
+	case snmerp_mib:oid_is_string(tuple_to_list(Oid), S#snmerp.mibs) of
+		true -> binary_to_list(Str);
+		false -> Str
+	end;
 v_to_value({value, {simple, {'string-value', Str}}}, _, _) when is_binary(Str) -> Str;
 v_to_value({value, {simple, {'integer-value', Int}}}, Oid, S) when is_integer(Int) ->
 	case snmerp_mib:oid_prefix_enum(tuple_to_list(Oid), S#snmerp.mibs) of
@@ -439,6 +446,8 @@ value_to_v(Str, Oid, S) when is_atom(Str) ->
 				_ -> error({unknown_enum_value, Str})
 			end
 	end;
+value_to_v(Str, _, _) when is_list(Str) ->
+	{value, {simple, {'string-value', list_to_binary(Str)}}};
 value_to_v(Other, _, _) ->
 	error({unknown_value_type, Other}).
 
