@@ -77,7 +77,7 @@ open(Address, Options) ->
 	Community = proplists:get_value(community, Options, "public"),
 	Mibs = case proplists:get_value(mibs, Options) of
 		undefined ->
-			{ok, M} = snmerp_mib:add_dir(filename:join([code:priv_dir(snmerp), "mibs"]), snmerp_mib:empty()),
+			{ok, M} = snmerp_mib:default(),
 			M;
 		M -> M
 	end,

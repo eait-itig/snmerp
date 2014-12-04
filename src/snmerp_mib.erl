@@ -32,7 +32,7 @@
 -include_lib("snmp/include/snmp_types.hrl").
 
 -export([empty/0, add_file/2, add_dir/2, name_to_oid/2, oid_to_prefix_me/2,
-	oid_to_me/2, oid_prefix_enum/2, table_info/2]).
+	oid_to_me/2, oid_prefix_enum/2, table_info/2, default/0]).
 
 -record(mibdat, {
 	name2oid = trie:new() :: trie:trie(),
@@ -50,6 +50,10 @@
 -spec empty() -> mibs().
 empty() ->
 	#mibdat{}.
+
+-spec default() -> mibs().
+default() ->
+	snmerp_mib:add_dir(filename:join([code:priv_dir(snmerp), "mibs"]), snmerp_mib:empty()).
 
 -spec name_to_oid(name(), mibs()) -> oid() | not_found.
 name_to_oid(Name, #mibdat{name2oid = Name2Oid}) ->
