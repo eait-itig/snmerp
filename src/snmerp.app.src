@@ -8,8 +8,6 @@
   {applications, [
                   kernel,
                   stdlib,
-                  ssl,
-                  lager,
                   asn1
                  ]},
   {mod, { snmerp_app, []}},
