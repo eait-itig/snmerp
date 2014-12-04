@@ -31,7 +31,7 @@
 
 -include_lib("snmp/include/snmp_types.hrl").
 
--export([empty/0, add_file/2, add_dir/2, name_to_oid/2, oid_to_prefix_me/2, 
+-export([empty/0, add_file/2, add_dir/2, name_to_oid/2, oid_to_prefix_me/2,
 	oid_to_me/2, oid_prefix_enum/2, table_info/2]).
 
 -record(mibdat, {
@@ -44,7 +44,7 @@
 -type oid() :: [integer()].
 -type name() :: string().
 -type me() :: #me{}.
--type enum() :: [{integer(), string()}].
+-type enum() :: [{integer(), atom()}].
 -export_type([mibs/0]).
 
 -spec empty() -> mibs().
@@ -58,7 +58,7 @@ name_to_oid(Name, #mibdat{name2oid = Name2Oid}) ->
 		_ -> not_found
 	end.
 
--spec table_info(oid(), mibs()) -> {#table_info{}, Augmented :: [#table_info{}], Columns :: [me()]} | not_found.
+-spec table_info(oid(), mibs()) -> {#table_info{}, Augmented :: [me()], Columns :: [me()]} | not_found.
 table_info(Oid, #mibdat{tables = Tables}) ->
 	case trie:find(Oid, Tables) of
 		{ok, Mes} ->
@@ -105,12 +105,12 @@ add_file(Path, D = #mibdat{}) ->
 							Name2Oid2 = trie:store(atom_to_list(NameAtom), TableOid, Name2Oid),
 							DD#mibdat{name2oid = Name2Oid2};
 
-						(Me = #me{entrytype = EntType}, DD = #mibdat{}) 
+						(Me = #me{entrytype = EntType}, DD = #mibdat{})
 								when (EntType =:= variable) or (EntType =:= table_column)
 								or (EntType =:= table) ->
-							#me{oid = Oid, aliasname = NameAtom, 
+							#me{oid = Oid, aliasname = NameAtom,
 								asn1_type = Asn1Type, assocList = Assocs} = Me,
-							#mibdat{name2oid = Name2Oid, oid2me = Oid2Me, 
+							#mibdat{name2oid = Name2Oid, oid2me = Oid2Me,
 								enums = Enums, tables = Tbls} = DD,
 							Name2Oid2 = trie:store(atom_to_list(NameAtom), Oid, Name2Oid),
 							Oid2Me2 = trie:store(Oid, Me, Oid2Me),
@@ -125,7 +125,7 @@ add_file(Path, D = #mibdat{}) ->
 								_ -> Enums
 							end,
 							Tbls2 = case proplists:get_value(table_name, Assocs) of
-								undefined when (EntType =:= table) -> 
+								undefined when (EntType =:= table) ->
 									TableInfo = proplists:get_value(table_info, Assocs),
 									TTbls = case TableInfo#table_info.index_types of
 										{augments, {ParentTblAtom, _}} ->
@@ -139,7 +139,7 @@ add_file(Path, D = #mibdat{}) ->
 									TblOid = trie:fetch(atom_to_list(TblNameAtom), Name2Oid),
 									trie:append(TblOid, Me, Tbls)
 							end,
-							DD#mibdat{name2oid = Name2Oid2, oid2me = Oid2Me2, 
+							DD#mibdat{name2oid = Name2Oid2, oid2me = Oid2Me2,
 								enums = Enums2, tables = Tbls2};
 
 						(#me{}, DD = #mibdat{}) ->

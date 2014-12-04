@@ -352,18 +352,18 @@ recv_reqid(Timeout, Sock, Ip, Port, ReqId) ->
 		{error, timeout}
 	end.
 
--spec v_to_value_fun(oid(), client()) -> fun((term()) -> value()).
+-spec v_to_value_fun(oid(), client()) -> fun((term(), oid(), client()) -> value()).
 v_to_value_fun(Oid, S) ->
 	case snmerp_mib:oid_prefix_enum(tuple_to_list(Oid), S#snmerp.mibs) of
 		not_found ->
-			case snmerp_mib:oid_to_prefix_me(Oid, S#snmerp.mibs) of
+			case snmerp_mib:oid_to_prefix_me(tuple_to_list(Oid), S#snmerp.mibs) of
 				#me{entrytype = EntType}
 						when (EntType =:= variable) or (EntType =:= table_column) ->
 					fun
 						({value, {simple, {'integer-value', Int}}}, _, _) -> Int;
 						(V, OOid, SS) -> v_to_value(V, OOid, SS) end;
 				_ ->
-					fun(V, OOid, SS) -> v_to_value(V, OOid, SS) end
+					(fun v_to_value/3)
 			end;
 		Enum ->
 			fun ({value, {simple, {'integer-value', Int}}}, _, _) ->
