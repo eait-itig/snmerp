@@ -51,7 +51,7 @@
 -opaque client() :: #snmerp{}.
 -export_type([client/0]).
 
--type req_option() :: {timeout, Ms :: integer()} | {max_bulk, integer()} | {retries, integer()}.
+-type req_option() :: {timeout, Ms :: integer()} | {max_bulk, integer()} | {retries, integer()} | trust_me.
 -type req_options() :: [req_option()].
 -type option() :: {community, string()} | {mibs, snmerp_mib:mibset()} | req_option().
 -type options() :: [option()].
@@ -212,6 +212,7 @@ table(S = #snmerp{}, Var, Opts) ->
 %% @doc Returns the rows of a table of objects, selecting particular columns.
 -spec table(client(), var(), [var()], req_options()) -> {ok, Rows :: [tuple()]} | {error, term()}.
 table(S = #snmerp{}, Var, Columns, Opts) ->
+	CheckCols = not lists:member(trust_me, Opts),
 	TableOid = var_to_oid(Var, S),
 
 	{_TblInfo, AugMes, _ColMes} = snmerp_mib:table_info(tuple_to_list(TableOid), S#snmerp.mibs),
@@ -224,8 +225,9 @@ table(S = #snmerp{}, Var, Columns, Opts) ->
 	SortedColumnOids = [FirstOid | _] = lists:sort(ColumnOids),
 
 	case lists:dropwhile(is_prefixed_fun(ColSet), ColumnOids) of
-		[NonMatch | _] -> error({column_outside_table, NonMatch, TableOid});
-		[] ->
+		[NonMatch | _] when CheckCols ->
+			error({column_outside_table, NonMatch, TableOid});
+		_ ->
 			Timeout = proplists:get_value(timeout, Opts, S#snmerp.timeout),
 			Retries = proplists:get_value(retries, Opts, S#snmerp.retries),
 			MaxBulk = proplists:get_value(max_bulk, Opts, S#snmerp.max_bulk),
