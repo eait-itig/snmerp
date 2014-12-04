@@ -135,6 +135,7 @@ walk(S = #snmerp{}, Var, Opts) ->
 	Retries = proplists:get_value(retries, Opts, S#snmerp.retries),
 	MaxBulk = proplists:get_value(max_bulk, Opts, S#snmerp.max_bulk),
 	Oid = var_to_oid(Var, S),
+	VFun = v_to_value_fun(Oid, S),
 	case walk_next(S, Oid, Oid, Timeout, Retries, MaxBulk) of
 		{ok, Vbs} ->
 			{OutValuesRev, _} = lists:foldl(fun(#'VarBind'{name = VbOid, v = V}, {Values, Seen}) ->
@@ -142,7 +143,7 @@ walk(S = #snmerp{}, Var, Opts) ->
 				case gb_sets:is_element(Index, Seen) of
 					true -> {Values, Seen};
 					false ->
-						Values2 = [{Index, v_to_value(V, VbOid, S)} | Values],
+						Values2 = [{Index, VFun(V, Oid, S)} | Values],
 						Seen2 = gb_sets:add_element(Index, Seen),
 						{Values2, Seen2}
 				end
@@ -239,10 +240,11 @@ table_next_vbs(S = #snmerp{}, Oids = [Oid | RestOids], Timeout, Retries, MaxBulk
 	{InPrefix, OutOfPrefix} = lists:splitwith(
 		fun(#'VarBind'{name = ThisOid}) -> is_tuple_prefix(Oid, ThisOid) end, Vbs),
 	{ok, _, ColumnIdx} = trie:find_prefix_longest(tuple_to_list(Oid), ColumnIdxs),
+	VFun = v_to_value_fun(Oid, S),
 	RowArray2 = lists:foldl(fun(#'VarBind'{name = ThisOid, v = V}, RA) ->
 		RowIdx = oid_single_index(Oid, ThisOid),
 		Row = array:get(RowIdx, RA),
-		Row2 = setelement(ColumnIdx, Row, v_to_value(V, ThisOid, S)),
+		Row2 = setelement(ColumnIdx, Row, VFun(V, ThisOid, S)),
 		array:set(RowIdx, Row2, RA)
 	end, RowArray, InPrefix),
 	case OutOfPrefix of
@@ -348,6 +350,24 @@ recv_reqid(Timeout, Sock, Ip, Port, ReqId) ->
 			end
 	after Timeout ->
 		{error, timeout}
+	end.
+
+-spec v_to_value_fun(oid(), client()) -> fun((term()) -> value()).
+v_to_value_fun(Oid, S) ->
+	case snmerp_mib:oid_prefix_enum(tuple_to_list(Oid), S#snmerp.mibs) of
+		not_found ->
+			case snmerp_mib:oid_to_prefix_me(Oid, S#snmerp.mibs) of
+				#me{entrytype = EntType}
+						when (EntType =:= variable) or (EntType =:= table_column) ->
+					fun
+						({value, {simple, {'integer-value', Int}}}, _, _) -> Int;
+						(V, OOid, SS) -> v_to_value(V, OOid, SS) end;
+				_ ->
+					fun(V, OOid, SS) -> v_to_value(V, OOid, SS) end
+			end;
+		Enum ->
+			fun ({value, {simple, {'integer-value', Int}}}, _, _) ->
+				proplists:get_value(Int, Enum, Int) end
 	end.
 
 -spec v_to_value(term(), oid(), client()) -> value().
