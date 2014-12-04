@@ -53,7 +53,10 @@ empty() ->
 
 -spec default() -> mibs().
 default() ->
-	snmerp_mib:add_dir(filename:join([code:priv_dir(snmerp), "mibs"]), snmerp_mib:empty()).
+	case snmerp_mib:add_dir(filename:join([code:priv_dir(snmerp), "mibs"]), snmerp_mib:empty()) of
+		{ok, Mibs} -> Mibs;
+		{error, Err} -> error(Err)
+	end.
 
 -spec name_to_oid(name(), mibs()) -> oid() | not_found.
 name_to_oid(Name, #mibdat{name2oid = Name2Oid}) ->
