@@ -196,8 +196,8 @@ table(S = #snmerp{}, Var, Opts) ->
 
 	ColumnNames = [atom_to_list(Me#me.aliasname) || Me <- ColMes],
 	ColumnOids = [list_to_tuple(Me#me.oid) || Me <- ColMes],
-	ColumnIdxs = trie:new(lists:zip([tuple_to_list(C) || C <- ColumnOids], lists:seq(1, length(ColumnOids)))),
-	BaseRow = list_to_tuple([null || _ <- lists:seq(1, length(ColumnOids))]),
+	ColumnIdxs = trie:new(lists:zip([tuple_to_list(C) || C <- ColumnOids], lists:seq(2, length(ColumnOids)+1))),
+	BaseRow = list_to_tuple([null || _ <- lists:seq(1, length(ColumnOids)+1)]),
 	BaseRowArray = array:new([{default, BaseRow}]),
 	SortedColumnOids = [FirstOid | _] = lists:sort(ColumnOids),
 
@@ -218,8 +218,8 @@ table(S = #snmerp{}, Var, Columns, Opts) ->
 	ColSet = trie:new([tuple_to_list(TableOid)] ++ [Me#me.oid || Me <- AugMes]),
 
 	ColumnOids = [var_to_oid(C, S) || C <- Columns],
-	ColumnIdxs = trie:new(lists:zip([tuple_to_list(T) || T <- ColumnOids], lists:seq(1, length(ColumnOids)))),
-	BaseRow = list_to_tuple([null || _ <- lists:seq(1, length(ColumnOids))]),
+	ColumnIdxs = trie:new(lists:zip([tuple_to_list(T) || T <- ColumnOids], lists:seq(2, length(ColumnOids)+1))),
+	BaseRow = list_to_tuple([null || _ <- lists:seq(1, length(ColumnOids)+1)]),
 	BaseRowArray = array:new([{default, BaseRow}]),
 	SortedColumnOids = [FirstOid | _] = lists:sort(ColumnOids),
 
@@ -260,8 +260,12 @@ table_next_vbs(S = #snmerp{}, Oids = [Oid | RestOids], Timeout, Retries, MaxBulk
 	RowArray2 = lists:foldl(fun(#'VarBind'{name = ThisOid, v = V}, RA) ->
 		RowIdx = oid_single_index(Oid, ThisOid),
 		Row = array:get(RowIdx, RA),
-		Row2 = setelement(ColumnIdx, Row, VFun(V, ThisOid, S)),
-		array:set(RowIdx, Row2, RA)
+		Row2 = case element(1, Row) of
+			null -> RealIdx = oid_index(Oid, ThisOid), setelement(1, Row, RealIdx);
+			_ -> Row
+		end,
+		Row3 = setelement(ColumnIdx, Row2, VFun(V, ThisOid, S)),
+		array:set(RowIdx, Row3, RA)
 	end, RowArray, InPrefix),
 	case OutOfPrefix of
 		[] ->
