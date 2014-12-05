@@ -1,0 +1,4 @@
+%% encoding: UTF-8
+{application,snmerp}.
+{packages,[]}.
+{modules,[snmerp,snmerp_app,snmerp_mib,snmerp_sup]}.
