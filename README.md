@@ -27,3 +27,8 @@ And it has dedicated table fetching support:
 ## API documentation
 
 [See here](http://arekinath.github.io/snmerp/).
+
+## License
+
+2-clause BSD
+
