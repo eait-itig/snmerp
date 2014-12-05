@@ -61,8 +61,9 @@
 -type name() :: string().
 -type index() :: integer() | [integer()].
 -type var() :: oid() | name() | {name(), index()}.
+-type enum_value() :: atom().
 
--type value() :: binary() | string() | integer() | oid() | inet:ip_address() | null | not_found.
+-type value() :: binary() | string() | integer() | enum_value() | oid() | inet:ip_address() | null | not_found.
 
 -export([open/2, close/1]).
 -export([get/2, get/3]).
