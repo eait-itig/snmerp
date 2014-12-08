@@ -161,17 +161,11 @@ walk(S = #snmerp{}, Var, Opts) ->
 	VFun = v_to_value_fun(Oid, S),
 	case walk_next(S, Oid, Oid, Timeout, Retries, MaxBulk) of
 		{ok, Vbs} ->
-			{OutValuesRev, _} = lists:foldl(fun(#'VarBind'{name = VbOid, v = V}, {Values, Seen}) ->
+			OutValues = lists:map(fun(#'VarBind'{name = VbOid, v = V}) ->
 				Index = oid_index(Oid, VbOid),
-				case gb_sets:is_element(Index, Seen) of
-					true -> {Values, Seen};
-					false ->
-						Values2 = [{Index, VFun(V, Oid, S)} | Values],
-						Seen2 = gb_sets:add_element(Index, Seen),
-						{Values2, Seen2}
-				end
-			end, {[], gb_sets:empty()}, Vbs),
-			{ok, lists:reverse(OutValuesRev)};
+				{Index, VFun(V, Oid, S)}
+			end, Vbs),
+			{ok, OutValues};
 		Err -> Err
 	end.
 
@@ -180,17 +174,17 @@ walk_next(S = #snmerp{}, BaseOid, Oid, Timeout, Retries, MaxBulk) ->
 	ReqPdu = {'get-bulk-request', #'BulkPDU'{'non-repeaters' = 0, 'max-repetitions' = MaxBulk, 'variable-bindings' = ReqVbs}},
 	case request_pdu(ReqPdu, Timeout, Retries, S) of
 		{ok, #'PDU'{'variable-bindings' = Vbs}} ->
-			{InPrefix, OutOfPrefix} = lists:splitwith(
-				fun(#'VarBind'{name = ThisOid}) -> is_tuple_prefix(BaseOid, ThisOid) end, Vbs),
-			case OutOfPrefix of
-				[] ->
-					LastVb = lists:last(InPrefix),
-					NextOid = LastVb#'VarBind'.name,
+			LastVb = lists:last(Vbs),
+			NextOid = LastVb#'VarBind'.name,
+			case is_tuple_prefix(BaseOid, NextOid) of
+				true ->
 					case walk_next(S, BaseOid, NextOid, Timeout, Retries, MaxBulk) of
-						{ok, Rest} -> {ok, InPrefix ++ Rest};
+						{ok, Rest} -> {ok, Vbs ++ Rest};
 						Err -> Err
 					end;
-				_ ->
+				false ->
+					InPrefix = lists:takewhile(
+						fun(#'VarBind'{name = ThisOid}) -> is_tuple_prefix(BaseOid, ThisOid) end, Vbs),
 					{ok, InPrefix}
 			end;
 		Err -> Err
@@ -264,9 +258,17 @@ table_next(S = #snmerp{}, Oids, Oid, Timeout, Retries, MaxBulk, RowArray, Column
 	end.
 
 table_next_vbs(S = #snmerp{}, Oids = [Oid | RestOids], Timeout, Retries, MaxBulk, RowArray, ColumnIdxs, Vbs) ->
-	{InPrefix, OutOfPrefix} = lists:splitwith(
-		fun(#'VarBind'{name = ThisOid}) -> is_tuple_prefix(Oid, ThisOid) end, Vbs),
 	{ok, _, ColumnIdx} = trie:find_prefix_longest(tuple_to_list(Oid), ColumnIdxs),
+
+	LastVb = lists:last(Vbs),
+	case is_tuple_prefix(Oid, LastVb#'VarBind'.name) of
+		true ->
+			InPrefix = Vbs, OutOfPrefix = [];
+		false ->
+			{InPrefix, OutOfPrefix} = lists:splitwith(
+				fun(#'VarBind'{name = ThisOid}) -> is_tuple_prefix(Oid, ThisOid) end, Vbs)
+	end,
+
 	VFun = v_to_value_fun(Oid, S),
 	RowArray2 = lists:foldl(fun(#'VarBind'{name = ThisOid, v = V}, RA) ->
 		RowIdx = oid_single_index(Oid, ThisOid),
@@ -278,9 +280,9 @@ table_next_vbs(S = #snmerp{}, Oids = [Oid | RestOids], Timeout, Retries, MaxBulk
 		Row3 = setelement(ColumnIdx, Row2, VFun(V, ThisOid, S)),
 		array:set(RowIdx, Row3, RA)
 	end, RowArray, InPrefix),
+
 	case OutOfPrefix of
 		[] ->
-			LastVb = lists:last(InPrefix),
 			NewOid = LastVb#'VarBind'.name,
 			table_next(S, Oids, NewOid, Timeout, Retries, MaxBulk, RowArray2, ColumnIdxs);
 
