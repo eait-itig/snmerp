@@ -72,6 +72,8 @@
 -export([set/3, set/4]).
 -export([table/3, table/4]).
 
+-export([get_community/1]).
+
 %% @doc Creates an SNMP client.
 %%
 %% The client record returned by this function must be provided to other snmerp:
@@ -122,6 +124,10 @@ configure(S = #snmerp{}, {strings, list}) ->
 	S#snmerp{disp_str = true};
 configure(S = #snmerp{}, Opt) ->
 	error({unsupported_option, Opt}).
+
+%% @private
+-spec get_community(client()) -> string().
+get_community(#snmerp{community = C}) -> C.
 
 %% @doc Get a single object
 -spec get(client(), var()) -> {ok, value()} | {error, term()}.
