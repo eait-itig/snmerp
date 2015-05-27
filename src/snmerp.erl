@@ -66,6 +66,7 @@
 -type value() :: binary() | string() | integer() | enum_value() | oid() | inet:ip_address() | null | not_found.
 
 -export([open/2, close/1]).
+-export([configure/2]).
 -export([get/2, get/3]).
 -export([walk/2, walk/3]).
 -export([set/3, set/4]).
@@ -102,6 +103,25 @@ open(Address, Options) ->
 			DispStr = proplists:get_value(strings, Options, binary) =:= list,
 			{ok, #snmerp{ip = Ip, sock = Sock, community = Community, mibs = Mibs, timeout = Timeout, max_bulk = MaxBulk, retries = Retries, disp_str = DispStr}}
 	end.
+
+%% @doc Set options on a client after creation
+%%
+%% Note: this cannot change the mibs loaded.
+-spec configure(client(), option()) -> client().
+configure(S = #snmerp{}, {timeout, V}) when is_integer(V) ->
+	S#snmerp{timeout = V};
+configure(S = #snmerp{}, {max_bulk, V}) when is_integer(V) ->
+	S#snmerp{max_bulk = V};
+configure(S = #snmerp{}, {retries, V}) when is_integer(V) ->
+	S#snmerp{retries = V};
+configure(S = #snmerp{}, {community, V}) when is_list(V) ->
+	S#snmerp{community = V};
+configure(S = #snmerp{}, {strings, binary}) ->
+	S#snmerp{disp_str = false};
+configure(S = #snmerp{}, {strings, list}) ->
+	S#snmerp{disp_str = true};
+configure(S = #snmerp{}, Opt) ->
+	error({unsupported_option, Opt}).
 
 %% @doc Get a single object
 -spec get(client(), var()) -> {ok, value()} | {error, term()}.
