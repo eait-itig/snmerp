@@ -1,0 +1,50 @@
+SNMPv3 DEFINITIONS ::= BEGIN
+
+   IMPORTS
+	Integer32 FROM SMI
+	PDUs FROM SNMPv2;
+
+  USM ::=
+	SEQUENCE {
+	  engineID OCTET STRING,
+	  engineBoots Integer32,
+	  engineTime Integer32,
+	  username OCTET STRING,
+	  auth OCTET STRING,
+	  privacy OCTET STRING
+	}
+
+  ScopedPDU ::=
+	SEQUENCE {
+          contextEngineID OCTET STRING,
+          contextName OCTET STRING,
+          data ANY
+	}
+
+  V3Message ::=
+        SEQUENCE {
+          version
+            INTEGER {
+              version-3(3)
+            },
+
+          header
+            SEQUENCE {
+              msgID Integer32,
+              msgMaxSize Integer32,
+              msgFlags OCTET STRING,
+              msgSecurityModel
+                INTEGER {
+                  sec-usm(3)
+                }
+            },
+
+          msgSecurityParameters OCTET STRING,
+
+          data CHOICE {
+	    scopedPDU ScopedPDU,
+	    encrypted OCTET STRING
+	  }
+        }
+
+END
