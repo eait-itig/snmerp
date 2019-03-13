@@ -525,6 +525,19 @@ request_pdu({PduType, Pdu}, Timeout, Retries, S = #snmerp{sock = Sock, ip = Ip, 
 				'noError' -> {ok, ResponsePdu};
 				_ -> {error, ErrSt}
 			end;
+		{ok, {'report', ReportPdu}} ->
+			#'PDU'{'variable-bindings' = Vbs} = ReportPdu,
+			UnknownUser = var_to_oid({"usmStatsUnknownUserNames", 0}, S),
+			ClockSkew = var_to_oid({"usmStatsNotInTimeWindows", 0}, S),
+			BadAuthKey = var_to_oid({"usmStatsWrongDigests", 0}, S),
+			BadPrivKey = var_to_oid({"usmStatsDecryptionErrors", 0}, S),
+			case Vbs of
+				[#'VarBind'{'name' = UnknownUser}] -> {error, bad_username};
+				[#'VarBind'{'name' = ClockSkew}] -> {error, bad_clock};
+				[#'VarBind'{'name' = BadAuthKey}] -> {error, bad_authkey};
+				[#'VarBind'{'name' = BadPrivKey}] -> {error, bad_privkey};
+				_ -> {error, bad_config}
+			end;
 		{ok, {RespPduType, _}} ->
 			{error, {unexpected_pdu, RespPduType}};
 		{error, timeout} ->
@@ -565,14 +578,19 @@ recv_reqid_v3(S, Timeout, Sock, Ip, Port, ReqId) ->
 	receive
 		{udp, Sock, Ip, Port, ReplyBin} ->
 			case 'SNMPv3':decode('V3Message', ReplyBin) of
-				{ok, #'V3Message'{version = 'version-3', header = _Header, msgSecurityParameters = UsmBin, data = {_DataType, Data}} = Msg} ->
+				{ok, #'V3Message'{version = 'version-3', header = Header, msgSecurityParameters = UsmBin, data = {_DataType, Data}} = Msg} ->
 					{ok, Usm} = 'SNMPv3':decode('USM', UsmBin),
+
+					<<FlagBits>> = Header#'V3Message_header'.msgFlags,
+					AuthFlag = (FlagBits band 1) == 1,
+					PrivFlag = (FlagBits band 2) == 2,
 
 					%% check authentication
 					{ HMACAlgo, HMACBlank, HMACKey, HMACLen } = snmpv3_auth_data(S),
-					AuthResult = case HMACAlgo of
-						none -> ok;
-						_ ->
+					AuthResult = case {HMACAlgo, AuthFlag} of
+						{none, _} -> ok;
+						{_, false} -> missing_auth;
+						{_, true} ->
 							AuthUsm = Usm#'USM' { auth = HMACBlank },
 							{ok, AuthUsmBin} = 'SNMPv3':encode('USM', AuthUsm),
 							AuthMsg = Msg#'V3Message' { msgSecurityParameters = AuthUsmBin },
@@ -580,7 +598,7 @@ recv_reqid_v3(S, Timeout, Sock, Ip, Port, ReqId) ->
 							HMAC = crypto:hmac(HMACAlgo, HMACKey, AuthMsgBin, HMACLen),
 							case Usm#'USM'.auth of
 								HMAC -> ok;
-								_ -> io:format("HMAC mismatch: ~p vs ~p~n", [HMAC, Usm#'USM'.auth]), bad_hmac
+								_ -> io:format("HMAC mismatch: ~p vs ~p~n", [HMAC, Usm#'USM'.auth]), {error, bad_hmac}
 							end
 					end,
 
@@ -588,27 +606,34 @@ recv_reqid_v3(S, Timeout, Sock, Ip, Port, ReqId) ->
 					{ Cipher, _Salt, IV, PrivKey } = snmpv3_priv_data(S, Usm#'USM'.engineBoots, Usm#'USM'.engineTime, Salt),
 
 					case AuthResult of
-						ok ->
+						{error, _} ->	AuthResult;
+						_ ->
 							%% decrypt
-							PduBin = case Cipher of
-								none ->
-									Data#'ScopedPDU'.data;
+							{PduBin, ProtStatus} = case {Cipher, PrivFlag} of
+								{none, _} ->
+									{Data#'ScopedPDU'.data, AuthResult};
+								{_, false} ->
+									{Data#'ScopedPDU'.data, missing_priv};
 								_ ->
 									Decrypt = crypto:block_decrypt(Cipher, PrivKey, IV, Data),
 									{ok, ScopedPDU} = 'SNMPv3':decode('ScopedPDU', Decrypt),
-									ScopedPDU#'ScopedPDU'.data
+									{ScopedPDU#'ScopedPDU'.data, AuthResult}
 							end,
 
 							case 'SNMPv2':decode('PDUs', PduBin) of
+								{ok, {'report', Pdu}} ->
+									{ok, {'report', Pdu}};
 								{ok, {PduType, Pdu = #'PDU'{'request-id' = ReqId}}} ->
-									{ok, {PduType, Pdu}};
+									case ProtStatus of
+										ok -> {ok, {PduType, Pdu}};
+										_ -> {error, ProtStatus}
+									end;
 								{ok, {_PduType, #'PDU'{}}} ->
 									ok = inet:setopts(Sock, [{active, once}]),
 									recv_reqid_v3(S, Timeout, Sock, Ip, Port, ReqId);
 								_ ->
 									{error, bad_pdu_decode}
-							end;
-						AuthResult ->	AuthResult
+							end
 					end;
 				_ ->
 					{error, bad_message_decode}
