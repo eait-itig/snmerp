@@ -465,7 +465,8 @@ request_pdu({PduType, Pdu}, Timeout, Retries, S = #snmerp{sock = Sock, ip = Ip, 
 request_pdu({PduType, Pdu}, Timeout, Retries, S = #snmerp{sock = Sock, ip = Ip, snmp_ver = 3}) ->
 	%% get auth and privacy details
 	EngineBoots = S#snmerp.engine_boots,
-	TimeDiff = erlang:system_time(second) - S#snmerp.engine_time_at,
+	{MegaSecs, Secs, _} = erlang:now(),
+	TimeDiff = ((MegaSecs * 1000000) + Secs) - S#snmerp.engine_time_at,
 	EngineTime = S#snmerp.engine_time + TimeDiff,
 	<<_:1, RequestId:31/big>> = crypto:strong_rand_bytes(4),
 
@@ -679,10 +680,11 @@ discover(S = #snmerp{sock = Sock, ip = Ip, snmp_ver = 3}, Timeout) ->
 							EngineID = Spdu#'ScopedPDU'.contextEngineID,
 							AuthKey = create_key(S, S#snmerp.auth_protocol, EngineID, S#snmerp.auth_password),
 							PrivKey = create_key(S, S#snmerp.auth_protocol, EngineID, S#snmerp.priv_password),
+							{MegaSecs, Secs, _} = erlang:now(),
 							{ok, S#snmerp{ engine_id = Spdu#'ScopedPDU'.contextEngineID,
 								       engine_boots = RspUsm#'USM'.engineBoots,
 								       engine_time = RspUsm#'USM'.engineTime,
-								       engine_time_at = erlang:system_time(second),
+								       engine_time_at = (MegaSecs * 1000000) + Secs,
 								       auth_key = AuthKey,
 								       priv_key = list_to_binary(PrivKey) }};
 						_ ->
